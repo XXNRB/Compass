@@ -1,0 +1,35 @@
+// ============================================================================
+// Compass - Supabase client configuration
+// Connects the backend to your Supabase project (database, auth, storage).
+// ============================================================================
+
+
+const { createClient } = require('@supabase/supabase-js');
+
+
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+
+
+/**
+* Service-role client (admin access).
+* Uses SUPABASE_SERVICE_KEY, which bypasses Row Level Security (RLS).
+* Use only on the server for trusted operations (migrations, admin tasks,
+* background jobs). Never expose this key to the browser or mobile app.
+*/
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+
+/**
+* Anonymous client (public / user-facing access).
+* Uses SUPABASE_ANON_KEY, which respects RLS policies tied to the
+* authenticated user. Suitable for operations that should follow the same
+* access rules as your frontend when acting on behalf of a user.
+*/
+const supabaseAnon = createClient(supabaseUrl, supabaseAnonKey);
+
+
+module.exports = { supabase, supabaseAnon };
+
+
