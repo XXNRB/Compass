@@ -1,0 +1,23 @@
+# Environment variables - NEVER commit these
+.env
+.env.local
+.env.production
+
+# Node modules - always reinstallable
+node_modules/
+backend/node_modules/
+web/node_modules/
+
+# Build outputs
+web/dist/
+web/build/
+
+# Mac system files
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor files
+.cursor/
