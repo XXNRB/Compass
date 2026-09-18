@@ -7,6 +7,7 @@
 const express = require('express');
 const { google } = require('googleapis');
 const { supabase } = require('../config/supabase');
+const { rememberFrontendOrigin, getFrontendUrl } = require('../config/frontend');
 
 
 const router = express.Router();
@@ -41,6 +42,7 @@ const SESSION_TOKEN_KEY = 'googleTokens';
 * Starts the OAuth flow by redirecting the user to Google's consent screen.
 */
 router.get('/auth/google', (req, res) => {
+ rememberFrontendOrigin(req);
  const oauth2Client = getOAuth2Client();
  const authUrl = oauth2Client.generateAuthUrl({
    access_type: 'offline',
@@ -157,7 +159,7 @@ router.get('/auth/google/callback', async (req, res) => {
 
 
    // Redirect to dashboard with email so frontend can display it
-   const redirectUrl = `${process.env.FRONTEND_URL}/dashboard?email=${encodeURIComponent(userEmail)}&userId=${req.session.userId}&new=${isNewUser}`;
+   const redirectUrl = `${getFrontendUrl(req)}/dashboard?email=${encodeURIComponent(userEmail)}&userId=${req.session.userId}&new=${isNewUser}`;
    res.redirect(redirectUrl);
    } catch (error) {
    console.error('Google OAuth callback error:', error.message);

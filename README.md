@@ -222,6 +222,8 @@ npm run dev
 http://localhost:5173
 ```
 
+Vite uses the next free port if 5173 is taken (5174, and so on); use whichever URL it prints. The frontend proxies `/api` to the backend on port 3000 (override with `VITE_API_TARGET`), and the backend sends you back to the port you signed in from, so no port needs to be configured.
+
 ---
 
 ## Environment Variables
@@ -245,6 +247,8 @@ SUPABASE_SERVICE_KEY=your_supabase_service_key
 SESSION_SECRET=a_long_random_string
 FRONTEND_URL=http://localhost:5173
 ```
+
+`FRONTEND_URL` is the fallback frontend origin. In development the backend also accepts any `localhost` port; in production only `FRONTEND_URL` is allowed.
 
 ---
 

@@ -8,6 +8,7 @@ const express = require('express');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 const https = require('https');
 const { supabase } = require('../config/supabase');
+const { rememberFrontendOrigin, getFrontendUrl } = require('../config/frontend');
 
 
 const router = express.Router();
@@ -64,6 +65,7 @@ function fetchUserEmail(accessToken) {
 
 
 router.get('/auth/microsoft', async (req, res) => {
+ rememberFrontendOrigin(req);
  try {
    const msalClient = getMsalClient();
    const authUrl = await msalClient.getAuthCodeUrl({
@@ -156,7 +158,7 @@ router.get('/auth/microsoft/callback', async (req, res) => {
    }
 
    // Redirect to dashboard with email so frontend can display it
-   const redirectUrl = `${process.env.FRONTEND_URL}/dashboard?email=${encodeURIComponent(userEmail)}&userId=${req.session.userId}`;
+   const redirectUrl = `${getFrontendUrl(req)}/dashboard?email=${encodeURIComponent(userEmail)}&userId=${req.session.userId}`;
    res.redirect(redirectUrl);
  } catch (error) {
    console.error('Microsoft OAuth callback error:', error.message);

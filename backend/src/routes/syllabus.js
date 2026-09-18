@@ -11,6 +11,7 @@ const {
   addEventToGoogleCalendar,
 } = require('../services/syllabusScanner');
 const { supabase } = require('../config/supabase');
+const { findExistingDuplicate } = require('../services/eventDedupe');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -63,6 +64,7 @@ router.post('/syllabus/upload', upload.single('syllabus'), async (req, res) => {
 
     const events = await extractEventsFromSyllabus(pdfText, courseInfo);
     let googleCalendarAdded = 0;
+    let skippedDuplicates = 0;
 
     for (const event of events) {
       // Check for duplicate
@@ -77,6 +79,16 @@ router.post('/syllabus/upload', upload.single('syllabus'), async (req, res) => {
 
       if (existing) {
         console.log('Skipping duplicate:', event.eventTitle);
+        skippedDuplicates += 1;
+        continue;
+      }
+
+      // Same exam under a different title (e.g. "Midterm Exam" vs
+      // "CSE 3302 Midterm Exam"): match on date + type + similar time instead.
+      const similar = await findExistingDuplicate(supabase, userId, event);
+      if (similar) {
+        console.log(`Skipping "${event.eventTitle}": duplicate of existing "${similar.title}"`);
+        skippedDuplicates += 1;
         continue;
       }
 
@@ -111,6 +123,7 @@ router.post('/syllabus/upload', upload.single('syllabus'), async (req, res) => {
       duplicate: false,
       total: events.length,
       googleCalendarAdded,
+      skippedDuplicates,
       events,
     });
   } catch (error) {

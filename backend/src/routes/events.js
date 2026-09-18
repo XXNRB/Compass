@@ -7,6 +7,7 @@ const express = require('express');
 const { supabase } = require('../config/supabase');
 const { addEventToGoogleCalendar } = require('../services/syllabusScanner');
 const { calculateDeparture } = require('../services/departureEngine');
+const { deduplicateUserEvents } = require('../services/eventDedupe');
 
 
 const router = express.Router();
@@ -43,6 +44,30 @@ router.get('/events', async (req, res) => {
  } catch (err) {
    console.error('Events route error:', err.message);
    res.status(500).json({ message: 'Failed to fetch events' });
+ }
+});
+
+
+/**
+* GET /events/deduplicate
+* Removes duplicate exams/quizzes for the current user: same day, same type,
+* similar start time. Keeps the most detailed copy. Pass ?dryRun=true to
+* preview without deleting.
+*/
+router.get('/events/deduplicate', async (req, res) => {
+ const userId = req.session.userId || req.query.userId;
+
+ if (!userId) {
+   return res.status(401).json({ error: 'Not authenticated' });
+ }
+
+ try {
+   const dryRun = req.query.dryRun === 'true';
+   const result = await deduplicateUserEvents(supabase, userId, { dryRun });
+   res.json({ success: true, ...result });
+ } catch (err) {
+   console.error('Event deduplicate error:', err.message);
+   res.status(500).json({ error: 'Failed to remove duplicate events' });
  }
 });
 

@@ -1,16 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Link } from 'react-router-dom';
 import axios from 'axios';
-
-const API_BASE = 'http://localhost:3000/api';
-
-const PRIORITY_COLORS = {
-  5: '#ef4444',
-  4: '#f97316',
-  3: '#eab308',
-  2: '#3b82f6',
-  1: '#9ca3af',
-};
+import AppHeader from '../components/AppHeader.jsx';
+import Icon from '../components/Icon.jsx';
+import { PriorityTag, clampPriority } from '../components/Priority.jsx';
+import { API_BASE } from '../api.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -97,10 +90,6 @@ function buildMonthGrid(viewDate) {
   return cells;
 }
 
-function priorityColor(priority) {
-  const level = Math.min(5, Math.max(1, Number(priority) || 1));
-  return PRIORITY_COLORS[level] || PRIORITY_COLORS[1];
-}
 
 function getEventTimeLabel(event) {
     return event.event_time || event.time || '';
@@ -150,11 +139,6 @@ function formatFullDate(date) {
     day: 'numeric',
     year: 'numeric',
   });
-}
-
-function renderPriorityStars(priority) {
-  const count = Math.min(5, Math.max(1, Number(priority) || 1));
-  return '★'.repeat(count);
 }
 
 function Calendar() {
@@ -240,171 +224,86 @@ function Calendar() {
     setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
   }
 
+
   return (
     <div className="page">
-      <header style={{
-        padding: '1.25rem 0',
-        borderBottom: '1px solid var(--border)',
-        background: 'rgba(13, 19, 36, 0.8)',
-        backdropFilter: 'blur(12px)',
-        position: 'sticky',
-        top: 0,
-        zIndex: 10,
-      }}
-      >
-        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-          <Link to="/" style={{ fontSize: '1.35rem', fontWeight: 700, background: 'var(--gradient-hero)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-            Compass
-          </Link>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <Link to="/dashboard" style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Dashboard</Link>
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>{userEmail}</span>
-          </div>
-        </div>
-      </header>
+      <AppHeader userEmail={userEmail} wide />
 
-      <main style={{ width: '100%', padding: '2rem clamp(1rem, 2.5vw, 2rem) 3rem' }}>
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '1rem',
-          marginBottom: '1.5rem',
-        }}
-        >
-          <h1 style={{ fontSize: '1.8rem', fontWeight: 700 }}>Calendar</h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <button type="button" className="btn btn-ghost" onClick={goToPreviousMonth} aria-label="Previous month">←</button>
-            <h2 style={{ fontSize: '1.2rem', fontWeight: 600, minWidth: '220px', textAlign: 'center' }}>
+      <main className="container container--wide main">
+        <div className="page-head">
+          <h1 className="page-title">Calendar</h1>
+          <div className="cal-toolbar">
+            <button type="button" className="btn btn-ghost btn-icon" onClick={goToPreviousMonth} aria-label="Previous month">
+              <Icon name="chevron-left" />
+            </button>
+            <h2 className="cal-month">
               {MONTH_NAMES[viewDate.getMonth()]}
               {' '}
               {viewDate.getFullYear()}
             </h2>
-            <button type="button" className="btn btn-ghost" onClick={goToNextMonth} aria-label="Next month">→</button>
+            <button type="button" className="btn btn-ghost btn-icon" onClick={goToNextMonth} aria-label="Next month">
+              <Icon name="chevron-right" />
+            </button>
           </div>
         </div>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && (
+          <div className="notice notice--error" role="alert">
+            <Icon name="alert" />
+            <span>{error}</span>
+          </div>
+        )}
 
         {loading ? (
           <div className="loading-block">
-            <div className="spinner" />
-            <p>Loading events…</p>
+            <span className="spinner" aria-hidden="true" />
+            <span>Loading events</span>
           </div>
         ) : (
           <>
-            <section style={{
-              display: 'grid',
-              gridTemplateColumns: selectedDate ? 'minmax(0, 1fr) minmax(320px, 360px)' : 'minmax(0, 1fr)',
-              gap: '1.5rem',
-              alignItems: 'start',
-            }}
-            >
-              <div style={{
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 'var(--radius-lg)',
-                overflow: 'hidden',
-              }}
-              >
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
-                  borderBottom: '1px solid var(--border)',
-                }}
-                >
+            <section className={`cal-layout${selectedDate ? ' cal-layout--open' : ''}`}>
+              <div className="cal-board">
+                <div className="cal-weekdays">
                   {WEEKDAYS.map((day) => (
-                    <div key={day} style={{
-                      textAlign: 'center',
-                      fontSize: '0.77rem',
-                      fontWeight: 700,
-                      color: 'var(--text-muted)',
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.08em',
-                      padding: '0.85rem 0.4rem',
-                    }}
-                    >
-                      {day}
-                    </div>
+                    <div key={day} className="cal-weekday">{day}</div>
                   ))}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))' }}>
+                <div className="cal-grid">
                   {monthGrid.map((cell) => {
                     const dayEvents = scheduled.filter((event) => isSameDay(event.parsedDate, cell.date));
                     const isToday = isSameDay(cell.date, today);
                     const isSelected = selectedDate && isSameDay(cell.date, selectedDate);
+                    const classes = [
+                      'cal-cell',
+                      !cell.isCurrentMonth && 'cal-cell--muted',
+                      isToday && 'cal-cell--today',
+                      isSelected && 'cal-cell--selected',
+                    ].filter(Boolean).join(' ');
+
                     return (
                       <button
                         key={cell.date.toISOString()}
                         type="button"
+                        className={classes}
                         onClick={() => setSelectedDate(new Date(cell.date))}
-                        style={{
-                          minHeight: '120px',
-                          textAlign: 'left',
-                          padding: '0.55rem',
-                          background: isSelected ? 'rgba(99, 102, 241, 0.17)' : 'var(--bg-surface)',
-                          color: 'var(--text)',
-                          border: '1px solid var(--border)',
-                          borderTop: 0,
-                          borderLeft: 0,
-                          opacity: cell.isCurrentMonth ? 1 : 0.48,
-                          outline: 'none',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0.5rem',
-                        }}
+                        aria-label={`${formatFullDate(cell.date)}, ${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}`}
+                        aria-pressed={!!isSelected}
                       >
-                        <span style={{
-                          width: '1.95rem',
-                          height: '1.95rem',
-                          borderRadius: '50%',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: '0.83rem',
-                          fontWeight: 700,
-                          color: isToday || isSelected ? '#fff' : 'var(--text-muted)',
-                          background: isToday || isSelected ? 'var(--accent)' : 'transparent',
-                        }}
-                        >
-                          {cell.date.getDate()}
-                        </span>
-                        <div style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '0.35rem',
-                          width: '100%',
-                          overflow: 'hidden',
-                        }}
-                        >
+                        <span className="cal-daynum">{cell.date.getDate()}</span>
+                        <div className="cal-events">
                           {dayEvents.slice(0, 4).map((event) => (
                             <div
                               key={event.id}
+                              className="cal-pill"
+                              data-level={clampPriority(event.priority)}
                               title={event.title}
-                              style={{
-                                borderLeft: `3px solid ${priorityColor(event.priority)}`,
-                                background: 'rgba(255, 255, 255, 0.06)',
-                                borderRadius: '6px',
-                                fontSize: '0.72rem',
-                                lineHeight: 1.3,
-                                padding: '0.22rem 0.4rem',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                width: '100%',
-                                maxWidth: '100%',
-                              }}
                             >
                               {event.title}
                             </div>
                           ))}
                           {dayEvents.length > 4 ? (
-                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                              +
-                              {dayEvents.length - 4}
-                              {' '}
-                              more
+                            <span className="cal-more">
+                              +{dayEvents.length - 4} more
                             </span>
                           ) : null}
                         </div>
@@ -415,167 +314,105 @@ function Calendar() {
               </div>
 
               {selectedDate ? (
-                <aside style={{
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: '1rem',
-                  position: 'sticky',
-                  top: '5.6rem',
-                  maxHeight: 'calc(100vh - 7rem)',
-                  overflow: 'auto',
-                }}
-                >
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    marginBottom: '0.9rem',
-                  }}
-                  >
-                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>
-                      {formatFullDate(selectedDate)}
-                    </h3>
-                    <button type="button" className="btn btn-ghost" onClick={() => setSelectedDate(null)} style={{ padding: '0.45rem 0.8rem' }}>
-                      Close
+                <aside className="day-panel" aria-label="Day details">
+                  <div className="day-panel-head">
+                    <div>
+                      <p className="day-panel-weekday">
+                        {selectedDate.toLocaleDateString(undefined, { weekday: 'long' })}
+                      </p>
+                      <h3 className="day-panel-date">
+                        {selectedDate.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-icon"
+                      onClick={() => setSelectedDate(null)}
+                      aria-label="Close day details"
+                    >
+                      <Icon name="x" />
                     </button>
                   </div>
 
-                  <div style={{ display: 'grid', gap: '0.7rem', marginBottom: '1rem' }}>
-                    {selectedDayEvents.length === 0 ? (
-                      <div style={{
-                        border: '1px dashed var(--border)',
-                        borderRadius: '10px',
-                        padding: '0.9rem',
-                        color: 'var(--text-muted)',
-                        fontSize: '0.9rem',
-                      }}
-                      >
-                        No events for this day.
-                      </div>
-                    ) : (
-                      selectedDayEvents.map((event) => (
-                        <article
-                          key={event.id}
-                          style={{
-                            border: `1px solid ${priorityColor(event.priority)}55`,
-                            borderLeft: `4px solid ${priorityColor(event.priority)}`,
-                            borderRadius: '10px',
-                            padding: '0.7rem 0.8rem',
-                            background: 'rgba(15, 23, 42, 0.5)',
-                          }}
-                        >
-                          <h4 style={{ fontSize: '0.95rem', marginBottom: '0.2rem', fontWeight: 600 }}>{event.title}</h4>
-                          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                            Time: {getEventTimeLabel(event) || 'Not set'}
-                          </p>
-                          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Location: {getEventLocation(event)}</p>
-                          {event.status === 'approved' && formatDepartureTime(event.departure_time) && (
-                            <p style={{ fontSize: '0.8rem', color: 'var(--accent-soft)' }}>
-                              Depart by {formatDepartureTime(event.departure_time)}
-                            </p>
-                          )}
-                          <p style={{ fontSize: '0.84rem', color: priorityColor(event.priority), marginTop: '0.3rem' }}>
-                            {renderPriorityStars(event.priority)}
-                          </p>
-                        </article>
-                      ))
-                    )}
-                  </div>
-
-                  <div style={{
-                    borderTop: '1px solid var(--border)',
-                    paddingTop: '0.9rem',
-                  }}
-                  >
-                    <h4 style={{ fontSize: '0.87rem', color: 'var(--text-muted)', marginBottom: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-                      Daily Timeline
-                    </h4>
-                    <div style={{ display: 'grid', gap: '0.45rem' }}>
-                      {DAY_HOURS.map((hour) => {
-                        const hourlyEvents = selectedDayEventsByHour.get(hour) || [];
-                        return (
-                          <div key={hour} style={{
-                            display: 'grid',
-                            gridTemplateColumns: '72px minmax(0, 1fr)',
-                            gap: '0.5rem',
-                            alignItems: 'start',
-                          }}
+                  <div className="day-panel-body">
+                    <div className="day-events">
+                      {selectedDayEvents.length === 0 ? (
+                        <div className="day-empty">No events for this day.</div>
+                      ) : (
+                        selectedDayEvents.map((event) => (
+                          <article
+                            key={event.id}
+                            className="day-event"
+                            data-level={clampPriority(event.priority)}
                           >
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', paddingTop: '0.25rem' }}>
-                              {formatHourLabel(hour)}
-                            </span>
-                            <div style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: '8px',
-                              minHeight: '2.15rem',
-                              padding: '0.25rem',
-                              background: 'rgba(255, 255, 255, 0.02)',
-                              display: 'grid',
-                              gap: '0.3rem',
-                            }}
-                            >
-                              {hourlyEvents.map((event) => (
-                                <div
-                                  key={`${event.id}-hour-${hour}`}
-                                  style={{
-                                    borderLeft: `3px solid ${priorityColor(event.priority)}`,
-                                    background: 'rgba(255, 255, 255, 0.05)',
-                                    borderRadius: '6px',
-                                    padding: '0.22rem 0.35rem',
-                                    fontSize: '0.72rem',
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                  title={event.title}
-                                >
-                                  {event.title}
-                                </div>
-                              ))}
+                            <h4 className="day-event-title">{event.title}</h4>
+                            <p className="fact">
+                              <Icon name="clock" />
+                              {getEventTimeLabel(event) || 'Time not set'}
+                            </p>
+                            <p className="fact">
+                              <Icon name="pin" />
+                              {getEventLocation(event)}
+                            </p>
+                            {event.status === 'approved' && formatDepartureTime(event.departure_time) && (
+                              <p className="fact">
+                                <Icon name="navigation" />
+                                Depart by {formatDepartureTime(event.departure_time)}
+                              </p>
+                            )}
+                            <PriorityTag priority={event.priority} />
+                          </article>
+                        ))
+                      )}
+                    </div>
+
+                    <div>
+                      <h4 className="section-label">Timeline</h4>
+                      <div className="timeline">
+                        {DAY_HOURS.map((hour) => {
+                          const hourlyEvents = selectedDayEventsByHour.get(hour) || [];
+                          return (
+                            <div key={hour} className="timeline-row">
+                              <span className="timeline-hour">{formatHourLabel(hour)}</span>
+                              <div className="timeline-slot">
+                                {hourlyEvents.map((event) => (
+                                  <div
+                                    key={`${event.id}-hour-${hour}`}
+                                    className="cal-pill"
+                                    data-level={clampPriority(event.priority)}
+                                    title={event.title}
+                                  >
+                                    {event.title}
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </aside>
               ) : null}
             </section>
 
-            <section style={{
-              marginTop: '1.5rem',
-              background: 'var(--bg-card)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius)',
-              padding: '1rem',
-            }}
-            >
-              <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.9rem' }}>Unscheduled Events</h3>
+            <section className="unscheduled">
+              <h3 className="section-label">
+                Unscheduled
+                <span className="count">{unscheduled.length}</span>
+              </h3>
               {unscheduled.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>No unscheduled events.</p>
+                <p className="page-subtitle">No unscheduled events.</p>
               ) : (
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-                  gap: '0.8rem',
-                }}
-                >
+                <div className="unscheduled-grid">
                   {unscheduled.map((event) => (
                     <article
                       key={event.id}
-                      style={{
-                        borderLeft: `4px solid ${priorityColor(event.priority)}`,
-                        background: 'var(--bg-surface)',
-                        border: '1px solid var(--border)',
-                        borderRadius: '10px',
-                        padding: '0.75rem',
-                      }}
+                      className="unscheduled-item"
+                      data-level={clampPriority(event.priority)}
                     >
-                      <p style={{ fontSize: '0.88rem', fontWeight: 600, marginBottom: '0.25rem' }}>{event.title}</p>
-                      {event.raw_date ? (
-                        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{event.raw_date}</p>
-                      ) : null}
+                      <p>{event.title}</p>
+                      {event.raw_date ? <p>{event.raw_date}</p> : null}
                     </article>
                   ))}
                 </div>

@@ -1,6 +1,6 @@
 const fs = require('fs');
-const envPath = '/Users/kofidadzie-yeboah/projects/schedulo/backend/.env';
-fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+const path = require('path');
+const envPath = path.join(__dirname, '../.env');fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
   const trimmed = line.trim();
   if (!trimmed || trimmed[0] === '#') return;
   const eqIndex = trimmed.indexOf('=');
@@ -24,11 +24,16 @@ const syllabusRoutes = require('./routes/syllabus');
 const calendarSyncRoutes = require('./routes/calendarSync');
 const canvasRoutes = require('./routes/canvas');
 const preferencesRoutes = require('./routes/preferences');
+const { isAllowedOrigin } = require('./config/frontend');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173', credentials: true }));
+// Reflect any allowed frontend origin (FRONTEND_URL, plus any localhost port in dev).
+app.use(cors({
+  origin: (origin, callback) => callback(null, !origin || isAllowedOrigin(origin)),
+  credentials: true,
+}));
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(morgan('dev'));
 app.use(express.json());

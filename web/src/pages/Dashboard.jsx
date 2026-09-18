@@ -1,35 +1,60 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
 import axios from 'axios';
-
-const API_BASE = 'http://localhost:3000/api';
-
-
-const PRIORITY_COLORS = {
- 5: '#ef4444',
- 4: '#f97316',
- 3: '#eab308',
- 2: '#3b82f6',
- 1: '#9ca3af',
-};
+import AppHeader from '../components/AppHeader.jsx';
+import Icon from '../components/Icon.jsx';
+import { PriorityTag } from '../components/Priority.jsx';
+import { API_BASE, authUrl } from '../api.js';
 
 
-function PriorityStars({ priority }) {
- const level = Math.min(5, Math.max(1, Number(priority) || 1));
- const color = PRIORITY_COLORS[level] || PRIORITY_COLORS[1];
+// A failed scan can mean three different things, and the fix differs for each:
+// no response at all (server down or blocked), 401 (no live login for that
+// provider), or a server-side error that carries its own message.
+function describeScanError(err, label) {
+ if (!err.response) {
+   return {
+     message: 'Could not reach the Compass server. Check that the backend is running.',
+     needsConnect: false,
+   };
+ }
+
+ if (err.response.status === 401) {
+   return {
+     message: `${label} is not connected for this session.`,
+     needsConnect: true,
+   };
+ }
+
+ return {
+   message:
+     err.response.data?.error ||
+     err.response.data?.message ||
+     `Scan failed (server error ${err.response.status}). Check that the backend is running.`,
+   needsConnect: false,
+ };
+}
 
 
+function Spinner() {
+ return <span className="spinner" aria-hidden="true" />;
+}
+
+
+function Field({ label, children }) {
  return (
-   <span className="priority-stars" title={`Priority ${level}/5`}>
-     {[1, 2, 3, 4, 5].map((star) => (
-       <span
-         key={star}
-         style={{ color: star <= level ? color : '#334155' }}
-       >
-         ★
-       </span>
-     ))}
-   </span>
+   <label className="field">
+     <span className="field-label">{label}</span>
+     {children}
+   </label>
+ );
+}
+
+
+function Notice({ tone, children, inline = false }) {
+ return (
+   <div className={`notice notice--${tone}${inline ? ' notice--inline' : ''}`} role={tone === 'error' ? 'alert' : 'status'}>
+     <Icon name={tone === 'error' ? 'alert' : 'check'} />
+     <span>{children}</span>
+   </div>
  );
 }
 
@@ -38,6 +63,7 @@ function Dashboard() {
  const [userEmail, setUserEmail] = useState('');
  const [loading, setLoading] = useState(false);
  const [error, setError] = useState(null);
+ const [reconnect, setReconnect] = useState(null);
  const [scanMeta, setScanMeta] = useState(null);
  const [syllabusFile, setSyllabusFile] = useState(null);
  const [courseName, setCourseName] = useState('');
@@ -67,6 +93,45 @@ function Dashboard() {
  const [prefsSaveMessage, setPrefsSaveMessage] = useState(null);
  const [prefsSaveError, setPrefsSaveError] = useState(null);
  const [approveMessage, setApproveMessage] = useState(null);
+ const [dedupeLoading, setDedupeLoading] = useState(false);
+ const [dedupeMessage, setDedupeMessage] = useState(null);
+
+ // Preview first, then confirm: removal is permanent.
+ async function handleRemoveDuplicates() {
+   setDedupeLoading(true);
+   setDedupeMessage(null);
+   setError(null);
+   setReconnect(null);
+
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     const url = `${API_BASE}/events/deduplicate?userId=${userId}`;
+     const plural = (n) => `${n} duplicate event${n !== 1 ? 's' : ''}`;
+
+     const { data: preview } = await axios.get(`${url}&dryRun=true`, { withCredentials: true });
+     if (!preview.removed) {
+       setDedupeMessage('No duplicate events found.');
+       return;
+     }
+
+     const confirmed = window.confirm(
+       `Found ${plural(preview.removed)} in ${preview.groups.length} group${preview.groups.length !== 1 ? 's' : ''}. Remove them and keep the most detailed copy of each?`,
+     );
+     if (!confirmed) return;
+
+     const { data } = await axios.get(url, { withCredentials: true });
+     setDedupeMessage(`Removed ${plural(data.removed)}.`);
+     await fetchPendingEvents();
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to remove duplicate events.';
+     setError(message);
+   } finally {
+     setDedupeLoading(false);
+   }
+ }
 
  async function fetchPreferences() {
    try {
@@ -267,6 +332,7 @@ function Dashboard() {
  async function handleScan() {
    setLoading(true);
    setError(null);
+   setReconnect(null);
    setScanMeta(null);
 
 
@@ -279,11 +345,9 @@ function Dashboard() {
      setScanMeta({ total: data.total, saved: data.saved });
      await fetchPendingEvents();
    } catch (err) {
-     const message =
-       err.response?.data?.error ||
-       err.response?.data?.message ||
-       'Failed to scan emails. Connect Gmail first.';
+     const { message, needsConnect } = describeScanError(err, 'Gmail');
      setError(message);
+     setReconnect(needsConnect ? { provider: 'google', label: 'Gmail' } : null);
    } finally {
      setLoading(false);
    }
@@ -312,6 +376,7 @@ function Dashboard() {
  async function handleScanOutlook() {
    setOutlookLoading(true);
    setError(null);
+   setReconnect(null);
 
    try {
      const userId = localStorage.getItem('compassUserId') || '';
@@ -325,11 +390,9 @@ function Dashboard() {
      }));
      await fetchPendingEvents();
    } catch (err) {
-     const message =
-       err.response?.data?.error ||
-       err.response?.data?.message ||
-       'Failed to scan Outlook emails. Connect Outlook first.';
+     const { message, needsConnect } = describeScanError(err, 'Outlook');
      setError(message);
+     setReconnect(needsConnect ? { provider: 'microsoft', label: 'Outlook' } : null);
    } finally {
      setOutlookLoading(false);
    }
@@ -365,8 +428,10 @@ function Dashboard() {
 
      const total = data.total ?? 0;
      const googleCalendarAdded = data.googleCalendarAdded ?? 0;
+     const skipped = data.skippedDuplicates ?? 0;
      setSyllabusMessage(
-       `Found ${total} event${total !== 1 ? 's' : ''} — ${googleCalendarAdded} added to Google Calendar`,
+       `Found ${total} event${total !== 1 ? 's' : ''} — ${googleCalendarAdded} added to Google Calendar`
+       + (skipped ? `, ${skipped} duplicate${skipped !== 1 ? 's' : ''} skipped` : ''),
      );
 
      await fetchPendingEvents();
@@ -382,521 +447,366 @@ function Dashboard() {
  }
 
 
+
  return (
    <div className="page">
-     {/* --- Header --- */}
-     <header
-       style={{
-         padding: '1.25rem 0',
-         borderBottom: '1px solid var(--border)',
-         background: 'rgba(13, 19, 36, 0.8)',
-         backdropFilter: 'blur(12px)',
-         position: 'sticky',
-         top: 0,
-         zIndex: 10,
-       }}
-     >
-       <div
-         className="container"
-         style={{
-           display: 'flex',
-           alignItems: 'center',
-           justifyContent: 'space-between',
-           flexWrap: 'wrap',
-           gap: '1rem',
-         }}
-       >
-         <Link
-           to="/"
-           style={{
-             fontSize: '1.35rem',
-             fontWeight: 700,
-             background: 'var(--gradient-hero)',
-             WebkitBackgroundClip: 'text',
-             WebkitTextFillColor: 'transparent',
-         }}
->
- Compass
-</Link>
-<div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
- <Link to="/calendar" style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-   Calendar
- </Link>
- <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-   {userEmail}
- </span>
-</div>
-       </div>
-     </header>
+     <AppHeader userEmail={userEmail} />
 
-
-     <main className="container" style={{ padding: '2.5rem 1.5rem 4rem' }}>
-       <div
-         style={{
-           display: 'flex',
-           flexWrap: 'wrap',
-           alignItems: 'center',
-           justifyContent: 'space-between',
-           gap: '1rem',
-           marginBottom: '2rem',
-         }}
-       >
+     <main className="container main">
+       <div className="page-head">
          <div>
-           <h1 style={{ fontSize: '1.75rem', fontWeight: 700, marginBottom: '0.35rem' }}>
-             Detected events
-           </h1>
-           <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem' }}>
-             Scan your Gmail for scheduling-related messages
+           <h1 className="page-title">Dashboard</h1>
+           <p className="page-subtitle">
+             Review the events Compass has detected from your email, syllabi, and Canvas.
            </p>
          </div>
-         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={handleScan}
-            disabled={loading}
-          >
-            {loading ? 'Scanning…' : 'Scan My Emails'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-outline"
-            onClick={handleScanOutlook}
-            disabled={outlookLoading}
-          >
-            {outlookLoading ? 'Scanning…' : 'Scan Outlook Emails'}
-          </button>
-          <button
-            type="button"
-            className="btn btn-outline"
-            onClick={handleGoogleCalendarSync}
-            disabled={syncLoading}
-          >
-            {syncLoading ? 'Syncing…' : 'Sync Google Calendar'}
-          </button>
-</div>
+         <div className="toolbar">
+           <button
+             type="button"
+             className="btn btn-primary"
+             onClick={handleScan}
+             disabled={loading}
+           >
+             {loading && <Spinner />}
+             {loading ? 'Scanning' : 'Scan Gmail'}
+           </button>
+           <button
+             type="button"
+             className="btn btn-outline"
+             onClick={handleScanOutlook}
+             disabled={outlookLoading}
+           >
+             {outlookLoading && <Spinner />}
+             {outlookLoading ? 'Scanning' : 'Scan Outlook'}
+           </button>
+           <button
+             type="button"
+             className="btn btn-outline"
+             onClick={handleGoogleCalendarSync}
+             disabled={syncLoading}
+           >
+             {syncLoading && <Spinner />}
+             {syncLoading ? 'Syncing' : 'Sync Google Calendar'}
+           </button>
+           <button
+             type="button"
+             className="btn btn-outline"
+             onClick={handleRemoveDuplicates}
+             disabled={dedupeLoading}
+           >
+             {dedupeLoading && <Spinner />}
+             {dedupeLoading ? 'Checking' : 'Remove Duplicates'}
+           </button>
+         </div>
        </div>
 
-
-       <section
-         className="event-card"
-         style={{ marginBottom: '2rem' }}
-       >
-         <h2 style={{ fontSize: '1.15rem', fontWeight: 600, marginBottom: '0.35rem' }}>
-           Upload Syllabus
-         </h2>
-         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.25rem' }}>
-           Upload a course syllabus PDF and Compass will extract exams, assignments, and deadlines.
-         </p>
-
-         <form
-           onSubmit={handleSyllabusUpload}
-           style={{ display: 'grid', gap: '1rem' }}
-         >
-           <label style={{ display: 'grid', gap: '0.45rem' }}>
-             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Syllabus PDF</span>
-             <input
-               type="file"
-               accept="application/pdf,.pdf"
-               onChange={(e) => setSyllabusFile(e.target.files?.[0] || null)}
-               style={{
-                 width: '100%',
-                 padding: '0.75rem 1rem',
-                 borderRadius: '12px',
-                 border: '1px solid var(--border)',
-                 background: 'var(--bg-surface)',
-                 color: 'var(--text)',
-                 fontSize: '0.95rem',
-               }}
-             />
-           </label>
-
-           <label style={{ display: 'grid', gap: '0.45rem' }}>
-             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Course Name</span>
-             <input
-               type="text"
-               value={courseName}
-               onChange={(e) => setCourseName(e.target.value)}
-               placeholder="e.g. Introduction to Computer Science"
-               style={{
-                 width: '100%',
-                 padding: '0.75rem 1rem',
-                 borderRadius: '12px',
-                 border: '1px solid var(--border)',
-                 background: 'var(--bg-surface)',
-                 color: 'var(--text)',
-                 fontSize: '0.95rem',
-               }}
-             />
-           </label>
-
-           <label style={{ display: 'grid', gap: '0.45rem' }}>
-             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Course Code</span>
-             <input
-               type="text"
-               value={courseCode}
-               onChange={(e) => setCourseCode(e.target.value)}
-               placeholder="e.g. CSE 131"
-               style={{
-                 width: '100%',
-                 padding: '0.75rem 1rem',
-                 borderRadius: '12px',
-                 border: '1px solid var(--border)',
-                 background: 'var(--bg-surface)',
-                 color: 'var(--text)',
-                 fontSize: '0.95rem',
-               }}
-             />
-           </label>
-
-           <button
-             type="submit"
-             className="btn btn-outline"
-             disabled={syllabusLoading || loading}
-             style={{ justifySelf: 'start' }}
-           >
-             {syllabusLoading ? 'Scanning syllabus with AI...' : 'Upload'}
-           </button>
-         </form>
-
-         {syllabusError && (
-           <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
-             {syllabusError}
-           </div>
-         )}
-
-         {syllabusMessage && !syllabusLoading && (
-           <p
-             style={{
-               color: 'var(--accent-soft)',
-               fontSize: '0.9rem',
-               marginTop: '1rem',
-               marginBottom: 0,
-             }}
-           >
-             {syllabusMessage}
-           </p>
-         )}
-       </section>
-
-
-       <section
-         className="event-card"
-         style={{ marginBottom: '2rem' }}
-       >
-         <h2 style={{ fontSize: '1.15rem', fontWeight: 600, marginBottom: '0.35rem' }}>
-           Canvas LMS
-         </h2>
-         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.25rem' }}>
-           Connect your school&apos;s Canvas to pull in assignment due dates automatically.
-         </p>
-
-         {canvasConnected && !showCanvasForm ? (
-           <div>
-             <p style={{ color: 'var(--accent-soft)', fontSize: '0.9rem', marginBottom: '1rem' }}>
-               Connected to {canvasConnectedUrl}
-             </p>
-             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-               <button
-                 type="button"
-                 className="btn btn-primary"
-                 onClick={handleCanvasSync}
-                 disabled={canvasSyncLoading}
-               >
-                 {canvasSyncLoading ? 'Syncing…' : 'Sync Canvas Assignments'}
-               </button>
-               <button
-                 type="button"
-                 className="btn btn-outline"
-                 onClick={() => setShowCanvasForm(true)}
-               >
-                 Change token
-               </button>
-             </div>
-
-             {canvasSyncError && (
-               <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
-                 {canvasSyncError}
-               </div>
-             )}
-
-             {canvasSyncMessage && !canvasSyncLoading && (
-               <p
-                 style={{
-                   color: 'var(--accent-soft)',
-                   fontSize: '0.9rem',
-                   marginTop: '1rem',
-                   marginBottom: 0,
-                 }}
-               >
-                 {canvasSyncMessage}
-               </p>
-             )}
-           </div>
-         ) : (
-           <form
-             onSubmit={handleCanvasConnect}
-             style={{ display: 'grid', gap: '1rem' }}
-           >
-             <label style={{ display: 'grid', gap: '0.45rem' }}>
-               <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>School Canvas URL</span>
-               <input
-                 type="text"
-                 value={canvasUrl}
-                 onChange={(e) => setCanvasUrl(e.target.value)}
-                 placeholder="e.g. yourschool.instructure.com"
-                 style={{
-                   width: '100%',
-                   padding: '0.75rem 1rem',
-                   borderRadius: '12px',
-                   border: '1px solid var(--border)',
-                   background: 'var(--bg-surface)',
-                   color: 'var(--text)',
-                   fontSize: '0.95rem',
-                 }}
-               />
-             </label>
-
-             <label style={{ display: 'grid', gap: '0.45rem' }}>
-               <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Canvas API Token</span>
-               <input
-                 type="password"
-                 value={canvasToken}
-                 onChange={(e) => setCanvasToken(e.target.value)}
-                 placeholder="Paste your Canvas personal access token"
-                 style={{
-                   width: '100%',
-                   padding: '0.75rem 1rem',
-                   borderRadius: '12px',
-                   border: '1px solid var(--border)',
-                   background: 'var(--bg-surface)',
-                   color: 'var(--text)',
-                   fontSize: '0.95rem',
-                 }}
-               />
-             </label>
-
-             <div style={{ display: 'flex', gap: '0.75rem' }}>
-               <button
-                 type="submit"
-                 className="btn btn-outline"
-                 disabled={canvasConnectLoading}
-                 style={{ justifySelf: 'start' }}
-               >
-                 {canvasConnectLoading ? 'Connecting…' : 'Connect Canvas'}
-               </button>
-               {canvasConnected && (
-                 <button
-                   type="button"
-                   className="btn btn-ghost"
-                   onClick={() => setShowCanvasForm(false)}
-                 >
-                   Cancel
-                 </button>
-               )}
-             </div>
-           </form>
-         )}
-
-         {canvasConnectError && (
-           <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
-             {canvasConnectError}
-           </div>
-         )}
-       </section>
-
-
-       <section
-         className="event-card"
-         style={{ marginBottom: '2rem' }}
-       >
-         <h2 style={{ fontSize: '1.15rem', fontWeight: 600, marginBottom: '0.35rem' }}>
-           Settings
-         </h2>
-         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.25rem' }}>
-           Set your home address and preferred travel mode so Compass can recommend when to leave for approved events.
-         </p>
-
-         <form
-           onSubmit={handleSavePreferences}
-           style={{ display: 'grid', gap: '1rem' }}
-         >
-           <label style={{ display: 'grid', gap: '0.45rem' }}>
-             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Home Address</span>
-             <input
-               type="text"
-               value={homeAddress}
-               onChange={(e) => setHomeAddress(e.target.value)}
-               placeholder="e.g. 1 Brookings Dr, St. Louis, MO"
-               style={{
-                 width: '100%',
-                 padding: '0.75rem 1rem',
-                 borderRadius: '12px',
-                 border: '1px solid var(--border)',
-                 background: 'var(--bg-surface)',
-                 color: 'var(--text)',
-                 fontSize: '0.95rem',
-               }}
-             />
-           </label>
-
-           <label style={{ display: 'grid', gap: '0.45rem' }}>
-             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Preferred Travel Mode</span>
-             <select
-               value={travelMode}
-               onChange={(e) => setTravelMode(e.target.value)}
-               style={{
-                 width: '100%',
-                 padding: '0.75rem 1rem',
-                 borderRadius: '12px',
-                 border: '1px solid var(--border)',
-                 background: 'var(--bg-surface)',
-                 color: 'var(--text)',
-                 fontSize: '0.95rem',
-               }}
-             >
-               <option value="driving">Driving</option>
-               <option value="walking">Walking</option>
-               <option value="transit">Transit</option>
-               <option value="bicycling">Bicycling</option>
-             </select>
-           </label>
-
-           <button
-             type="submit"
-             className="btn btn-outline"
-             disabled={prefsSaveLoading}
-             style={{ justifySelf: 'start' }}
-           >
-             {prefsSaveLoading ? 'Saving…' : 'Save Preferences'}
-           </button>
-         </form>
-
-         {prefsSaveError && (
-           <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
-             {prefsSaveError}
-           </div>
-         )}
-
-         {prefsSaveMessage && !prefsSaveLoading && (
-           <p
-             style={{
-               color: 'var(--accent-soft)',
-               fontSize: '0.9rem',
-               marginTop: '1rem',
-               marginBottom: 0,
-             }}
-           >
-             {prefsSaveMessage}
-           </p>
-         )}
-       </section>
-
-
-       {error && <div className="error-banner">{error}</div>}
-       {approveMessage && (
-         <p style={{ color: 'var(--accent-soft)', fontSize: '0.9rem', marginBottom: '1rem' }}>
-           {approveMessage}
-         </p>
+       {error && (
+         <Notice tone="error">
+           {error}
+           {reconnect && (
+             <>
+               {' '}
+               <a href={authUrl(reconnect.provider)}>Connect {reconnect.label}</a>
+             </>
+           )}
+         </Notice>
        )}
-       {syncMessage && (
-        <p style={{ color: 'var(--accent-soft)', fontSize: '0.9rem', marginBottom: '1rem' }}>
-          {syncMessage}
-        </p>
-        )}
-
+       {approveMessage && <Notice tone="success">{approveMessage}</Notice>}
+       {syncMessage && <Notice tone="success">{syncMessage}</Notice>}
+       {dedupeMessage && <Notice tone="success">{dedupeMessage}</Notice>}
        {scanMeta && !loading && (
-         <p
-           style={{
-             color: 'var(--text-muted)',
-             fontSize: '0.9rem',
-             marginBottom: '1.5rem',
-           }}
-         >
+         <Notice tone="success">
            Found {scanMeta.total} event{scanMeta.total !== 1 ? 's' : ''}
            {typeof scanMeta.saved === 'number' && ` · ${scanMeta.saved} saved to database`}
-         </p>
+         </Notice>
        )}
 
+       <div className="dash-grid">
+         {/* --- Pending events --- */}
+         <section aria-labelledby="pending-heading">
+           <h2 id="pending-heading" className="section-label">
+             Pending review
+             {!pendingLoading && <span className="count">{pendingEvents.length}</span>}
+           </h2>
 
-       {loading && (
-         <div className="loading-block">
-           <div className="spinner" />
-           <p>Scanning your inbox with AI…</p>
-         </div>
-       )}
+           {loading && (
+             <div className="loading-block">
+               <Spinner />
+               <span>Scanning your inbox with AI</span>
+             </div>
+           )}
 
+           {pendingLoading && !loading && (
+             <div className="loading-block">
+               <Spinner />
+               <span>Loading events</span>
+             </div>
+           )}
 
-       {pendingLoading && !loading && (
-         <div className="loading-block">
-           <div className="spinner" />
-           <p>Loading events…</p>
-         </div>
-       )}
+           {!loading && !pendingLoading && pendingEvents.length === 0 && !error && (
+             <div className="empty-state">
+               <strong>Nothing to review</strong>
+               Scan Gmail or Outlook to find scheduling info in your inbox.
+             </div>
+           )}
 
+           {!loading && !pendingLoading && pendingEvents.length > 0 && (
+             <div className="event-list">
+               {pendingEvents.map((event) => {
+                 const isActing = actionPendingId === event.id;
 
-       {!loading && !pendingLoading && pendingEvents.length === 0 && !error && (
-         <div className="empty-state">
-           <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>
-             No events yet
-           </p>
-           <p>Click &quot;Scan My Emails&quot; or &quot;Scan Outlook&quot; to find scheduling info in your inbox.</p>
-         </div>
-       )}
+                 return (
+                   <article key={event.id} className="event-card">
+                     <div className="event-card-header">
+                       <h3 className="event-title">{event.title || 'Untitled event'}</h3>
+                       <div className="event-tags">
+                         <PriorityTag priority={event.priority} />
+                         <span className="tag">{event.scheduling_type || 'other'}</span>
+                       </div>
+                     </div>
 
+                     {(event.raw_date || event.event_time || event.location) && (
+                       <div className="event-facts">
+                         {event.raw_date && (
+                           <p className="fact">
+                             <Icon name="calendar" />
+                             {event.raw_date}
+                           </p>
+                         )}
+                         {event.event_time && (
+                           <p className="fact">
+                             <Icon name="clock" />
+                             {event.event_time}
+                           </p>
+                         )}
+                         {event.location && (
+                           <p className="fact">
+                             <Icon name="pin" />
+                             {event.location}
+                           </p>
+                         )}
+                       </div>
+                     )}
 
-       {!loading &&
-         !pendingLoading &&
-         pendingEvents.map((event) => {
-           const isActing = actionPendingId === event.id;
+                     {event.description && (
+                       <p className="event-description">{event.description}</p>
+                     )}
 
-           return (
-             <article key={event.id} className="event-card">
-               <div className="event-card-header">
-                 <h2 className="event-title">{event.title || 'Untitled event'}</h2>
-                 <div className="event-meta">
-                   <PriorityStars priority={event.priority} />
-                   <span className="badge">{event.scheduling_type || 'other'}</span>
-                 </div>
-               </div>
+                     <div className="event-actions">
+                       <button
+                         type="button"
+                         className="btn btn-primary"
+                         onClick={() => handleApprove(event.id)}
+                         disabled={isActing}
+                       >
+                         <Icon name="check" />
+                         {isActing ? 'Working' : 'Approve'}
+                       </button>
+                       <button
+                         type="button"
+                         className="btn btn-outline btn-danger-ghost"
+                         onClick={() => handleReject(event.id)}
+                         disabled={isActing}
+                       >
+                         <Icon name="x" />
+                         {isActing ? 'Working' : 'Reject'}
+                       </button>
+                     </div>
+                   </article>
+                 );
+               })}
+             </div>
+           )}
+         </section>
 
+         {/* --- Sources & settings --- */}
+         <aside className="stack" aria-label="Sources and settings">
+           <section className="card">
+             <h2 className="card-title">Upload syllabus</h2>
+             <p className="card-desc">
+               Compass extracts exams, assignments, and deadlines from a course syllabus PDF.
+             </p>
 
-               {event.location && (
-                 <p className="event-detail">Location: {event.location}</p>
-               )}
-               {event.raw_date && (
-                 <p className="event-detail">Date: {event.raw_date}</p>
-               )}
-               {event.event_time && (
-                 <p className="event-detail">Time: {event.event_time}</p>
-               )}
+             <form onSubmit={handleSyllabusUpload} className="form">
+               <Field label="Syllabus PDF">
+                 <input
+                   type="file"
+                   className="input"
+                   accept="application/pdf,.pdf"
+                   onChange={(e) => setSyllabusFile(e.target.files?.[0] || null)}
+                 />
+               </Field>
 
+               <Field label="Course name">
+                 <input
+                   type="text"
+                   className="input"
+                   value={courseName}
+                   onChange={(e) => setCourseName(e.target.value)}
+                   placeholder="Introduction to Computer Science"
+                 />
+               </Field>
 
-               {event.description && (
-                 <p className="event-reasoning">{event.description}</p>
-               )}
+               <Field label="Course code">
+                 <input
+                   type="text"
+                   className="input"
+                   value={courseCode}
+                   onChange={(e) => setCourseCode(e.target.value)}
+                   placeholder="CSE 131"
+                 />
+               </Field>
 
-               <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+               <div className="form-actions">
                  <button
-                   type="button"
-                   className="btn btn-primary"
-                   onClick={() => handleApprove(event.id)}
-                   disabled={isActing}
-                 >
-                   {isActing ? 'Working…' : 'Approve'}
-                 </button>
-                 <button
-                   type="button"
+                   type="submit"
                    className="btn btn-outline"
-                   onClick={() => handleReject(event.id)}
-                   disabled={isActing}
+                   disabled={syllabusLoading || loading}
                  >
-                   {isActing ? 'Working…' : 'Reject'}
+                   {syllabusLoading && <Spinner />}
+                   {syllabusLoading ? 'Scanning syllabus' : 'Upload'}
                  </button>
                </div>
-             </article>
-           );
-         })}
+             </form>
+
+             {syllabusError && <Notice tone="error" inline>{syllabusError}</Notice>}
+             {syllabusMessage && !syllabusLoading && (
+               <Notice tone="success" inline>{syllabusMessage}</Notice>
+             )}
+           </section>
+
+           <section className="card">
+             <h2 className="card-title">Canvas</h2>
+             <p className="card-desc">
+               Pull assignment due dates from your school&apos;s Canvas automatically.
+             </p>
+
+             {canvasConnected && !showCanvasForm ? (
+               <div>
+                 <p className="connected-row">
+                   <span className="status-dot" aria-hidden="true" />
+                   <span>Connected to <strong>{canvasConnectedUrl}</strong></span>
+                 </p>
+                 <div className="form-actions">
+                   <button
+                     type="button"
+                     className="btn btn-primary"
+                     onClick={handleCanvasSync}
+                     disabled={canvasSyncLoading}
+                   >
+                     {canvasSyncLoading && <Spinner />}
+                     {canvasSyncLoading ? 'Syncing' : 'Sync assignments'}
+                   </button>
+                   <button
+                     type="button"
+                     className="btn btn-outline"
+                     onClick={() => setShowCanvasForm(true)}
+                   >
+                     Change token
+                   </button>
+                 </div>
+
+                 {canvasSyncError && <Notice tone="error" inline>{canvasSyncError}</Notice>}
+                 {canvasSyncMessage && !canvasSyncLoading && (
+                   <Notice tone="success" inline>{canvasSyncMessage}</Notice>
+                 )}
+               </div>
+             ) : (
+               <form onSubmit={handleCanvasConnect} className="form">
+                 <Field label="School Canvas URL">
+                   <input
+                     type="text"
+                     className="input"
+                     value={canvasUrl}
+                     onChange={(e) => setCanvasUrl(e.target.value)}
+                     placeholder="yourschool.instructure.com"
+                   />
+                 </Field>
+
+                 <Field label="API token">
+                   <input
+                     type="password"
+                     className="input"
+                     value={canvasToken}
+                     onChange={(e) => setCanvasToken(e.target.value)}
+                     placeholder="Paste your personal access token"
+                   />
+                 </Field>
+
+                 <div className="form-actions">
+                   <button
+                     type="submit"
+                     className="btn btn-outline"
+                     disabled={canvasConnectLoading}
+                   >
+                     {canvasConnectLoading && <Spinner />}
+                     {canvasConnectLoading ? 'Connecting' : 'Connect Canvas'}
+                   </button>
+                   {canvasConnected && (
+                     <button
+                       type="button"
+                       className="btn btn-ghost"
+                       onClick={() => setShowCanvasForm(false)}
+                     >
+                       Cancel
+                     </button>
+                   )}
+                 </div>
+               </form>
+             )}
+
+             {canvasConnectError && <Notice tone="error" inline>{canvasConnectError}</Notice>}
+           </section>
+
+           <section className="card">
+             <h2 className="card-title">Travel preferences</h2>
+             <p className="card-desc">
+               Compass uses these to recommend when to leave for approved events.
+             </p>
+
+             <form onSubmit={handleSavePreferences} className="form">
+               <Field label="Home address">
+                 <input
+                   type="text"
+                   className="input"
+                   value={homeAddress}
+                   onChange={(e) => setHomeAddress(e.target.value)}
+                   placeholder="1 Brookings Dr, St. Louis, MO"
+                 />
+               </Field>
+
+               <Field label="Preferred travel mode">
+                 <select
+                   className="select"
+                   value={travelMode}
+                   onChange={(e) => setTravelMode(e.target.value)}
+                 >
+                   <option value="driving">Driving</option>
+                   <option value="walking">Walking</option>
+                   <option value="transit">Transit</option>
+                   <option value="bicycling">Bicycling</option>
+                 </select>
+               </Field>
+
+               <div className="form-actions">
+                 <button
+                   type="submit"
+                   className="btn btn-outline"
+                   disabled={prefsSaveLoading}
+                 >
+                   {prefsSaveLoading && <Spinner />}
+                   {prefsSaveLoading ? 'Saving' : 'Save preferences'}
+                 </button>
+               </div>
+             </form>
+
+             {prefsSaveError && <Notice tone="error" inline>{prefsSaveError}</Notice>}
+             {prefsSaveMessage && !prefsSaveLoading && (
+               <Notice tone="success" inline>{prefsSaveMessage}</Notice>
+             )}
+           </section>
+         </aside>
+       </div>
      </main>
    </div>
  );

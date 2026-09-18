@@ -6,6 +6,7 @@
 const express = require('express');
 const { google } = require('googleapis');
 const { supabase } = require('../config/supabase');
+const { findExistingDuplicate } = require('../services/eventDedupe');
 
 const router = express.Router();
 
@@ -121,10 +122,22 @@ router.get('/calendar/sync/google', async (req, res) => {
       if (existing) continue;
 
       const { rawDate, eventTime, startTime } = parseGoogleEventTiming(googleEvent.start);
+      const title = googleEvent.summary || 'Untitled event';
+      const schedulingType = detectSchedulingType(googleEvent.summary || '');
+
+      // Exams we pushed to Google Calendar come back with a new Google id and a
+      // reworded title, so the source_id check above can't catch them.
+      const similar = await findExistingDuplicate(supabase, userId, {
+        title,
+        raw_date: rawDate,
+        event_time: eventTime,
+        scheduling_type: schedulingType,
+      });
+      if (similar) continue;
 
       const { error: insertError } = await supabase.from('events').insert({
         user_id: userId,
-        title: googleEvent.summary || 'Untitled event',
+        title,
         description: googleEvent.description || null,
         raw_date: rawDate,
         event_time: eventTime,
@@ -132,7 +145,7 @@ router.get('/calendar/sync/google', async (req, res) => {
         location: googleEvent.location || null,
         source: 'google_calendar',
         source_id: googleEventId,
-        scheduling_type: detectSchedulingType(googleEvent.summary || ''),
+        scheduling_type: schedulingType,
         priority: detectPriority(googleEvent.summary || ''),
         status: 'approved',
       });
