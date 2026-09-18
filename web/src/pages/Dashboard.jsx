@@ -51,6 +51,138 @@ function Dashboard() {
  const [pendingEvents, setPendingEvents] = useState([]);
  const [pendingLoading, setPendingLoading] = useState(true);
  const [actionPendingId, setActionPendingId] = useState(null);
+ const [canvasUrl, setCanvasUrl] = useState('');
+ const [canvasToken, setCanvasToken] = useState('');
+ const [canvasConnected, setCanvasConnected] = useState(false);
+ const [canvasConnectedUrl, setCanvasConnectedUrl] = useState(null);
+ const [showCanvasForm, setShowCanvasForm] = useState(false);
+ const [canvasConnectLoading, setCanvasConnectLoading] = useState(false);
+ const [canvasConnectError, setCanvasConnectError] = useState(null);
+ const [canvasSyncLoading, setCanvasSyncLoading] = useState(false);
+ const [canvasSyncMessage, setCanvasSyncMessage] = useState(null);
+ const [canvasSyncError, setCanvasSyncError] = useState(null);
+ const [homeAddress, setHomeAddress] = useState('');
+ const [travelMode, setTravelMode] = useState('driving');
+ const [prefsSaveLoading, setPrefsSaveLoading] = useState(false);
+ const [prefsSaveMessage, setPrefsSaveMessage] = useState(null);
+ const [prefsSaveError, setPrefsSaveError] = useState(null);
+ const [approveMessage, setApproveMessage] = useState(null);
+
+ async function fetchPreferences() {
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     const { data } = await axios.get(`${API_BASE}/preferences?userId=${userId}`, {
+       withCredentials: true,
+     });
+     setHomeAddress(data.home_address || '');
+     setTravelMode(data.travel_mode || 'driving');
+   } catch (err) {
+     // Non-fatal: leave the defaults in place.
+   }
+ }
+
+ async function handleSavePreferences(event) {
+   event.preventDefault();
+   setPrefsSaveLoading(true);
+   setPrefsSaveError(null);
+   setPrefsSaveMessage(null);
+
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     await axios.post(
+       `${API_BASE}/preferences`,
+       { homeAddress, travelMode, userId },
+       { withCredentials: true },
+     );
+     setPrefsSaveMessage('Preferences saved.');
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to save preferences.';
+     setPrefsSaveError(message);
+   } finally {
+     setPrefsSaveLoading(false);
+   }
+ }
+
+ function formatDepartureTime(isoString) {
+   if (!isoString) return null;
+   const date = new Date(isoString);
+   if (Number.isNaN(date.getTime())) return null;
+   const hours = date.getHours();
+   const minutes = String(date.getMinutes()).padStart(2, '0');
+   const suffix = hours >= 12 ? 'PM' : 'AM';
+   const hour12 = hours % 12 || 12;
+   return `${hour12}:${minutes} ${suffix}`;
+ }
+
+ async function fetchCanvasStatus() {
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     const { data } = await axios.get(`${API_BASE}/canvas/status?userId=${userId}`, {
+       withCredentials: true,
+     });
+     setCanvasConnected(!!data.connected);
+     setCanvasConnectedUrl(data.canvasUrl || null);
+   } catch (err) {
+     // Non-fatal: leave the connect form available.
+   }
+ }
+
+ async function handleCanvasConnect(event) {
+   event.preventDefault();
+   setCanvasConnectLoading(true);
+   setCanvasConnectError(null);
+
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     const { data } = await axios.post(
+       `${API_BASE}/canvas/connect`,
+       { canvasUrl, canvasToken, userId },
+       { withCredentials: true },
+     );
+     setCanvasConnected(true);
+     setCanvasConnectedUrl(data.canvasUrl);
+     setShowCanvasForm(false);
+     setCanvasToken('');
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Could not connect to Canvas. Check your URL and API token.';
+     setCanvasConnectError(message);
+   } finally {
+     setCanvasConnectLoading(false);
+   }
+ }
+
+ async function handleCanvasSync() {
+   setCanvasSyncLoading(true);
+   setCanvasSyncError(null);
+   setCanvasSyncMessage(null);
+
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     const { data } = await axios.post(
+       `${API_BASE}/canvas/sync`,
+       { userId },
+       { withCredentials: true },
+     );
+     setCanvasSyncMessage(
+       `Found ${data.assignmentsFound} assignment${data.assignmentsFound !== 1 ? 's' : ''} across ${data.coursesFound} course${data.coursesFound !== 1 ? 's' : ''} — ${data.imported} new`,
+     );
+     await fetchPendingEvents();
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to sync Canvas assignments.';
+     setCanvasSyncError(message);
+   } finally {
+     setCanvasSyncLoading(false);
+   }
+ }
 
  async function fetchPendingEvents() {
    try {
@@ -82,18 +214,23 @@ function Dashboard() {
  localStorage.setItem('compassUserId', userIdFromUrl);
 }
    fetchPendingEvents();
+   fetchCanvasStatus();
+   fetchPreferences();
  }, []);
 
  async function handleApprove(id) {
    setActionPendingId(id);
+   setApproveMessage(null);
    try {
      const userId = localStorage.getItem('compassUserId') || '';
-     await axios.patch(
+     const { data } = await axios.patch(
        `${API_BASE}/events/${id}?userId=${userId}`,
        { status: 'approved' },
        { withCredentials: true },
      );
      setPendingEvents((prev) => prev.filter((event) => event.id !== id));
+     const departureTime = formatDepartureTime(data.event?.departure_time);
+     setApproveMessage(departureTime ? `Approved. Depart by ${departureTime}.` : 'Approved.');
    } catch (err) {
      const message =
        err.response?.data?.error ||
@@ -335,7 +472,7 @@ function Dashboard() {
             onClick={handleGoogleCalendarSync}
             disabled={syncLoading}
           >
-            {syncLoading ? 'Syncing…' : '📅 Sync Google Calendar'}
+            {syncLoading ? 'Syncing…' : 'Sync Google Calendar'}
           </button>
 </div>
        </div>
@@ -443,7 +580,225 @@ function Dashboard() {
        </section>
 
 
+       <section
+         className="event-card"
+         style={{ marginBottom: '2rem' }}
+       >
+         <h2 style={{ fontSize: '1.15rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+           Canvas LMS
+         </h2>
+         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.25rem' }}>
+           Connect your school&apos;s Canvas to pull in assignment due dates automatically.
+         </p>
+
+         {canvasConnected && !showCanvasForm ? (
+           <div>
+             <p style={{ color: 'var(--accent-soft)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+               Connected to {canvasConnectedUrl}
+             </p>
+             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+               <button
+                 type="button"
+                 className="btn btn-primary"
+                 onClick={handleCanvasSync}
+                 disabled={canvasSyncLoading}
+               >
+                 {canvasSyncLoading ? 'Syncing…' : 'Sync Canvas Assignments'}
+               </button>
+               <button
+                 type="button"
+                 className="btn btn-outline"
+                 onClick={() => setShowCanvasForm(true)}
+               >
+                 Change token
+               </button>
+             </div>
+
+             {canvasSyncError && (
+               <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
+                 {canvasSyncError}
+               </div>
+             )}
+
+             {canvasSyncMessage && !canvasSyncLoading && (
+               <p
+                 style={{
+                   color: 'var(--accent-soft)',
+                   fontSize: '0.9rem',
+                   marginTop: '1rem',
+                   marginBottom: 0,
+                 }}
+               >
+                 {canvasSyncMessage}
+               </p>
+             )}
+           </div>
+         ) : (
+           <form
+             onSubmit={handleCanvasConnect}
+             style={{ display: 'grid', gap: '1rem' }}
+           >
+             <label style={{ display: 'grid', gap: '0.45rem' }}>
+               <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>School Canvas URL</span>
+               <input
+                 type="text"
+                 value={canvasUrl}
+                 onChange={(e) => setCanvasUrl(e.target.value)}
+                 placeholder="e.g. yourschool.instructure.com"
+                 style={{
+                   width: '100%',
+                   padding: '0.75rem 1rem',
+                   borderRadius: '12px',
+                   border: '1px solid var(--border)',
+                   background: 'var(--bg-surface)',
+                   color: 'var(--text)',
+                   fontSize: '0.95rem',
+                 }}
+               />
+             </label>
+
+             <label style={{ display: 'grid', gap: '0.45rem' }}>
+               <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Canvas API Token</span>
+               <input
+                 type="password"
+                 value={canvasToken}
+                 onChange={(e) => setCanvasToken(e.target.value)}
+                 placeholder="Paste your Canvas personal access token"
+                 style={{
+                   width: '100%',
+                   padding: '0.75rem 1rem',
+                   borderRadius: '12px',
+                   border: '1px solid var(--border)',
+                   background: 'var(--bg-surface)',
+                   color: 'var(--text)',
+                   fontSize: '0.95rem',
+                 }}
+               />
+             </label>
+
+             <div style={{ display: 'flex', gap: '0.75rem' }}>
+               <button
+                 type="submit"
+                 className="btn btn-outline"
+                 disabled={canvasConnectLoading}
+                 style={{ justifySelf: 'start' }}
+               >
+                 {canvasConnectLoading ? 'Connecting…' : 'Connect Canvas'}
+               </button>
+               {canvasConnected && (
+                 <button
+                   type="button"
+                   className="btn btn-ghost"
+                   onClick={() => setShowCanvasForm(false)}
+                 >
+                   Cancel
+                 </button>
+               )}
+             </div>
+           </form>
+         )}
+
+         {canvasConnectError && (
+           <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
+             {canvasConnectError}
+           </div>
+         )}
+       </section>
+
+
+       <section
+         className="event-card"
+         style={{ marginBottom: '2rem' }}
+       >
+         <h2 style={{ fontSize: '1.15rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+           Settings
+         </h2>
+         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.25rem' }}>
+           Set your home address and preferred travel mode so Compass can recommend when to leave for approved events.
+         </p>
+
+         <form
+           onSubmit={handleSavePreferences}
+           style={{ display: 'grid', gap: '1rem' }}
+         >
+           <label style={{ display: 'grid', gap: '0.45rem' }}>
+             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Home Address</span>
+             <input
+               type="text"
+               value={homeAddress}
+               onChange={(e) => setHomeAddress(e.target.value)}
+               placeholder="e.g. 1 Brookings Dr, St. Louis, MO"
+               style={{
+                 width: '100%',
+                 padding: '0.75rem 1rem',
+                 borderRadius: '12px',
+                 border: '1px solid var(--border)',
+                 background: 'var(--bg-surface)',
+                 color: 'var(--text)',
+                 fontSize: '0.95rem',
+               }}
+             />
+           </label>
+
+           <label style={{ display: 'grid', gap: '0.45rem' }}>
+             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Preferred Travel Mode</span>
+             <select
+               value={travelMode}
+               onChange={(e) => setTravelMode(e.target.value)}
+               style={{
+                 width: '100%',
+                 padding: '0.75rem 1rem',
+                 borderRadius: '12px',
+                 border: '1px solid var(--border)',
+                 background: 'var(--bg-surface)',
+                 color: 'var(--text)',
+                 fontSize: '0.95rem',
+               }}
+             >
+               <option value="driving">Driving</option>
+               <option value="walking">Walking</option>
+               <option value="transit">Transit</option>
+               <option value="bicycling">Bicycling</option>
+             </select>
+           </label>
+
+           <button
+             type="submit"
+             className="btn btn-outline"
+             disabled={prefsSaveLoading}
+             style={{ justifySelf: 'start' }}
+           >
+             {prefsSaveLoading ? 'Saving…' : 'Save Preferences'}
+           </button>
+         </form>
+
+         {prefsSaveError && (
+           <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
+             {prefsSaveError}
+           </div>
+         )}
+
+         {prefsSaveMessage && !prefsSaveLoading && (
+           <p
+             style={{
+               color: 'var(--accent-soft)',
+               fontSize: '0.9rem',
+               marginTop: '1rem',
+               marginBottom: 0,
+             }}
+           >
+             {prefsSaveMessage}
+           </p>
+         )}
+       </section>
+
+
        {error && <div className="error-banner">{error}</div>}
+       {approveMessage && (
+         <p style={{ color: 'var(--accent-soft)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+           {approveMessage}
+         </p>
+       )}
        {syncMessage && (
         <p style={{ color: 'var(--accent-soft)', fontSize: '0.9rem', marginBottom: '1rem' }}>
           {syncMessage}
@@ -507,13 +862,13 @@ function Dashboard() {
 
 
                {event.location && (
-                 <p className="event-detail">📍 {event.location}</p>
+                 <p className="event-detail">Location: {event.location}</p>
                )}
                {event.raw_date && (
-                 <p className="event-detail">🗓 {event.raw_date}</p>
+                 <p className="event-detail">Date: {event.raw_date}</p>
                )}
                {event.event_time && (
-                 <p className="event-detail">🕐 {event.event_time}</p>
+                 <p className="event-detail">Time: {event.event_time}</p>
                )}
 
 
@@ -528,7 +883,7 @@ function Dashboard() {
                    onClick={() => handleApprove(event.id)}
                    disabled={isActing}
                  >
-                   {isActing ? 'Working…' : '✓ Approve'}
+                   {isActing ? 'Working…' : 'Approve'}
                  </button>
                  <button
                    type="button"
@@ -536,7 +891,7 @@ function Dashboard() {
                    onClick={() => handleReject(event.id)}
                    disabled={isActing}
                  >
-                   {isActing ? 'Working…' : '✗ Reject'}
+                   {isActing ? 'Working…' : 'Reject'}
                  </button>
                </div>
              </article>

@@ -6,6 +6,7 @@
 const express = require('express');
 const { supabase } = require('../config/supabase');
 const { addEventToGoogleCalendar } = require('../services/syllabusScanner');
+const { calculateDeparture } = require('../services/departureEngine');
 
 
 const router = express.Router();
@@ -82,23 +83,53 @@ router.patch('/events/:id', async (req, res) => {
    }
 
    let addedToGoogleCalendar = false;
+   let departureFields = {};
 
-   // Only insert into Google Calendar the first time a pending event is
-   // approved — re-approving an already-approved row is a no-op here.
-   if (status === 'approved' && event.status === 'pending' && req.session.googleTokens) {
-     const created = await addEventToGoogleCalendar(req.session.googleTokens, {
-       eventTitle: event.title,
-       eventDate: event.raw_date,
-       eventTime: event.event_time,
-       location: event.location,
-       reasoning: event.description,
-     });
-     addedToGoogleCalendar = !!created;
+   // Only run these the first time a pending event is approved —
+   // re-approving an already-approved row is a no-op here.
+   if (status === 'approved' && event.status === 'pending') {
+     if (req.session.googleTokens) {
+       const created = await addEventToGoogleCalendar(req.session.googleTokens, {
+         eventTitle: event.title,
+         eventDate: event.raw_date,
+         eventTime: event.event_time,
+         location: event.location,
+         reasoning: event.description,
+       });
+       addedToGoogleCalendar = !!created;
+     }
+
+     // Smart Departure Engine: only applies when the event has a location.
+     if (event.location) {
+       try {
+         const { data: prefs, error: prefsError } = await supabase
+           .from('user_preferences')
+           .select('home_address, travel_mode')
+           .eq('user_id', userId)
+           .maybeSingle();
+
+         if (prefsError) {
+           console.error('Supabase preferences lookup error:', prefsError.message);
+         } else if (prefs?.home_address) {
+           const departure = await calculateDeparture(event, prefs);
+           if (departure) {
+             departureFields = {
+               departure_time: departure.departureTime.toISOString(),
+               travel_duration_minutes: departure.travelDurationMinutes,
+               travel_mode_used: departure.travelModeUsed,
+             };
+           }
+         }
+       } catch (departureError) {
+         console.error('Smart Departure Engine error:', departureError.message);
+         // Non-fatal: approval proceeds without a departure recommendation.
+       }
+     }
    }
 
    const { data: updated, error: updateError } = await supabase
      .from('events')
-     .update({ status })
+     .update({ status, ...departureFields })
      .eq('id', req.params.id)
      .select()
      .single();

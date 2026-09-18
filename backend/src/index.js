@@ -22,6 +22,8 @@ const emailsRoutes = require('./routes/emails');
 const eventsRoutes = require('./routes/events');
 const syllabusRoutes = require('./routes/syllabus');
 const calendarSyncRoutes = require('./routes/calendarSync');
+const canvasRoutes = require('./routes/canvas');
+const preferencesRoutes = require('./routes/preferences');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,6 +45,8 @@ app.use('/api', emailsRoutes);
 app.use('/api', eventsRoutes);
 app.use('/api', syllabusRoutes);
 app.use('/api', calendarSyncRoutes);
+app.use('/api', canvasRoutes);
+app.use('/api', preferencesRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Compass API is running' });

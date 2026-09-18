@@ -132,6 +132,17 @@ function formatHourLabel(hour24) {
   return `${hour12}:00 ${suffix}`;
 }
 
+function formatDepartureTime(isoString) {
+  if (!isoString) return null;
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return null;
+  const hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  const hour12 = hours % 12 || 12;
+  return `${hour12}:${minutes} ${suffix}`;
+}
+
 function formatFullDate(date) {
   return date.toLocaleDateString(undefined, {
     weekday: 'long',
@@ -456,9 +467,14 @@ function Calendar() {
                         >
                           <h4 style={{ fontSize: '0.95rem', marginBottom: '0.2rem', fontWeight: 600 }}>{event.title}</h4>
                           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                            {getEventTimeLabel(event) || 'Time not set'}
+                            Time: {getEventTimeLabel(event) || 'Not set'}
                           </p>
-                          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{getEventLocation(event)}</p>
+                          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Location: {getEventLocation(event)}</p>
+                          {event.status === 'approved' && formatDepartureTime(event.departure_time) && (
+                            <p style={{ fontSize: '0.8rem', color: 'var(--accent-soft)' }}>
+                              Depart by {formatDepartureTime(event.departure_time)}
+                            </p>
+                          )}
                           <p style={{ fontSize: '0.84rem', color: priorityColor(event.priority), marginTop: '0.3rem' }}>
                             {renderPriorityStars(event.priority)}
                           </p>
