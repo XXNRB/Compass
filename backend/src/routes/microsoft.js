@@ -7,6 +7,7 @@
 const express = require('express');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 const https = require('https');
+const { supabase } = require('../config/supabase');
 
 
 const router = express.Router();
@@ -89,14 +90,74 @@ router.get('/auth/microsoft/callback', async (req, res) => {
      scopes: SCOPES,
      redirectUri: process.env.MICROSOFT_REDIRECT_URI,
    });
-   req.session[SESSION_TOKEN_KEY] = {
+
+   const tokens = {
      accessToken: tokenResponse.accessToken,
      refreshToken: tokenResponse.refreshToken,
      expiresOn: tokenResponse.expiresOn,
      account: tokenResponse.account,
    };
+   req.session[SESSION_TOKEN_KEY] = tokens;
+
    const userEmail = await fetchUserEmail(tokenResponse.accessToken);
-   res.json({ success: true, email: userEmail });
+
+   // --- Supabase: persist user profile and Microsoft tokens ---
+   if (userEmail) {
+     try {
+       // Look up an existing user by email
+       const { data: existingUser, error: lookupError } = await supabase
+         .from('users')
+         .select('id')
+         .eq('email', userEmail)
+         .maybeSingle();
+
+       if (lookupError) {
+         console.error('Supabase user lookup error:', lookupError.message);
+       } else if (!existingUser) {
+         // New user: create a row with email and Microsoft tokens
+         const { data: newUser, error: insertError } = await supabase
+           .from('users')
+           .insert({
+             email: userEmail,
+             microsoft_tokens: tokens,
+             updated_at: new Date().toISOString(),
+           })
+           .select('id')
+           .single();
+
+         if (insertError) {
+           console.error('Supabase user insert error:', insertError.message);
+         } else if (newUser?.id) {
+           req.session.userId = newUser.id;
+         }
+       } else {
+         // Returning user: refresh stored Microsoft OAuth tokens
+         const { data: updatedUser, error: updateError } = await supabase
+           .from('users')
+           .update({
+             microsoft_tokens: tokens,
+             updated_at: new Date().toISOString(),
+           })
+           .eq('id', existingUser.id)
+           .select('id')
+           .single();
+
+         if (updateError) {
+           console.error('Supabase user update error:', updateError.message);
+         } else if (updatedUser?.id) {
+           req.session.userId = updatedUser.id;
+         } else {
+           req.session.userId = existingUser.id;
+         }
+       }
+     } catch (dbError) {
+       console.error('Supabase save error:', dbError.message);
+     }
+   }
+
+   // Redirect to dashboard with email so frontend can display it
+   const redirectUrl = `${process.env.FRONTEND_URL}/dashboard?email=${encodeURIComponent(userEmail)}&userId=${req.session.userId}`;
+   res.redirect(redirectUrl);
  } catch (error) {
    console.error('Microsoft OAuth callback error:', error.message);
    res.status(500).json({ success: false, message: 'Failed to complete Microsoft authentication' });

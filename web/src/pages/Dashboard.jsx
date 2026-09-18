@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 
-
 const API_BASE = 'http://localhost:3000/api';
 
 
@@ -13,21 +12,6 @@ const PRIORITY_COLORS = {
  2: '#3b82f6',
  1: '#9ca3af',
 };
-
-
-/** Keep first event per Gmail threadId; events without threadId are all kept. */
-function deduplicateByThreadId(events) {
- const seenThreadIds = new Set();
-
-
- return events.filter((item) => {
-   const threadId = item.email?.threadId;
-   if (!threadId) return true;
-   if (seenThreadIds.has(threadId)) return false;
-   seenThreadIds.add(threadId);
-   return true;
- });
-}
 
 
 function PriorityStars({ priority }) {
@@ -52,11 +36,35 @@ function PriorityStars({ priority }) {
 
 function Dashboard() {
  const [userEmail, setUserEmail] = useState('');
- const [events, setEvents] = useState([]);
  const [loading, setLoading] = useState(false);
  const [error, setError] = useState(null);
  const [scanMeta, setScanMeta] = useState(null);
+ const [syllabusFile, setSyllabusFile] = useState(null);
+ const [courseName, setCourseName] = useState('');
+ const [courseCode, setCourseCode] = useState('');
+ const [syllabusLoading, setSyllabusLoading] = useState(false);
+ const [syllabusMessage, setSyllabusMessage] = useState(null);
+ const [syllabusError, setSyllabusError] = useState(null);
+ const [syncLoading, setSyncLoading] = useState(false);
+ const [syncMessage, setSyncMessage] = useState(null);
+ const [outlookLoading, setOutlookLoading] = useState(false);
+ const [pendingEvents, setPendingEvents] = useState([]);
+ const [pendingLoading, setPendingLoading] = useState(true);
+ const [actionPendingId, setActionPendingId] = useState(null);
 
+ async function fetchPendingEvents() {
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     const { data } = await axios.get(`${API_BASE}/events?userId=${userId}`, {
+       withCredentials: true,
+     });
+     setPendingEvents((data.events || []).filter((event) => event.status === 'pending'));
+   } catch (err) {
+     // Non-fatal: leave whatever list is already on screen.
+   } finally {
+     setPendingLoading(false);
+   }
+ }
 
  // Restore email from URL param (after OAuth) or localStorage
  useEffect(() => {
@@ -70,10 +78,53 @@ function Dashboard() {
      setUserEmail(localStorage.getItem('compassUserEmail') || 'Not signed in');
    }
    const userIdFromUrl = params.get('userId');
- if (userIdFromUrl) {
+ if (userIdFromUrl && userIdFromUrl !== 'undefined') {
  localStorage.setItem('compassUserId', userIdFromUrl);
 }
+   fetchPendingEvents();
  }, []);
+
+ async function handleApprove(id) {
+   setActionPendingId(id);
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     await axios.patch(
+       `${API_BASE}/events/${id}?userId=${userId}`,
+       { status: 'approved' },
+       { withCredentials: true },
+     );
+     setPendingEvents((prev) => prev.filter((event) => event.id !== id));
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to approve event.';
+     setError(message);
+   } finally {
+     setActionPendingId(null);
+   }
+ }
+
+ async function handleReject(id) {
+   setActionPendingId(id);
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     await axios.patch(
+       `${API_BASE}/events/${id}?userId=${userId}`,
+       { status: 'rejected' },
+       { withCredentials: true },
+     );
+     setPendingEvents((prev) => prev.filter((event) => event.id !== id));
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to reject event.';
+     setError(message);
+   } finally {
+     setActionPendingId(null);
+   }
+ }
 
 
  async function handleScan() {
@@ -88,18 +139,108 @@ function Dashboard() {
      });
 
 
-     const dedupedEvents = deduplicateByThreadId(data.events || []);
-     setEvents(dedupedEvents);
      setScanMeta({ total: data.total, saved: data.saved });
+     await fetchPendingEvents();
    } catch (err) {
      const message =
        err.response?.data?.error ||
        err.response?.data?.message ||
        'Failed to scan emails. Connect Gmail first.';
      setError(message);
-     setEvents([]);
    } finally {
      setLoading(false);
+   }
+ }
+ async function handleGoogleCalendarSync() {
+  setSyncLoading(true);
+  setSyncMessage(null);
+  try {
+    const userId = localStorage.getItem('compassUserId') || '';
+    const { data } = await axios.get(
+      `${API_BASE}/calendar/sync/google?userId=${userId}`,
+      { withCredentials: true },
+    );
+    setSyncMessage(`Imported ${data.imported} of ${data.total} Google Calendar events`);
+  } catch (err) {
+    const message =
+      err.response?.data?.error ||
+      err.response?.data?.message ||
+      'Failed to sync Google Calendar. Connect Google first.';
+    setSyncMessage(message);
+  } finally {
+    setSyncLoading(false);
+  }
+}
+
+ async function handleScanOutlook() {
+   setOutlookLoading(true);
+   setError(null);
+
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     const { data } = await axios.get(`${API_BASE}/emails/scan/outlook?userId=${userId}`, {
+       withCredentials: true,
+     });
+
+     setScanMeta((prev) => ({
+       total: (prev?.total || 0) + (data.total || 0),
+       saved: (prev?.saved || 0) + (data.saved || 0),
+     }));
+     await fetchPendingEvents();
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to scan Outlook emails. Connect Outlook first.';
+     setError(message);
+   } finally {
+     setOutlookLoading(false);
+   }
+ }
+
+ async function handleSyllabusUpload(event) {
+   event.preventDefault();
+
+   if (!syllabusFile) {
+     setSyllabusError('Please select a PDF syllabus to upload.');
+     return;
+   }
+
+   setSyllabusLoading(true);
+   setSyllabusError(null);
+   setSyllabusMessage(null);
+
+   try {
+     const formData = new FormData();
+     formData.append('syllabus', syllabusFile);
+     formData.append('courseName', courseName);
+     formData.append('courseCode', courseCode);
+     formData.append('userId', localStorage.getItem('compassUserId') || '');
+
+     const { data } = await axios.post(`${API_BASE}/syllabus/upload`, formData, {
+       withCredentials: true,
+     });
+
+     if (data.duplicate) {
+       setSyllabusMessage(data.message || 'This syllabus has already been uploaded. No new events were added.');
+       return;
+     }
+
+     const total = data.total ?? 0;
+     const googleCalendarAdded = data.googleCalendarAdded ?? 0;
+     setSyllabusMessage(
+       `Found ${total} event${total !== 1 ? 's' : ''} — ${googleCalendarAdded} added to Google Calendar`,
+     );
+
+     await fetchPendingEvents();
+   } catch (err) {
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to upload syllabus.';
+     setSyllabusError(message);
+   } finally {
+     setSyllabusLoading(false);
    }
  }
 
@@ -171,19 +312,143 @@ function Dashboard() {
              Scan your Gmail for scheduling-related messages
            </p>
          </div>
-         <button
-           type="button"
-           className="btn btn-primary"
-           onClick={handleScan}
-           disabled={loading}
-         >
-           {loading ? 'Scanning…' : 'Scan My Emails'}
-         </button>
+         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleScan}
+            disabled={loading}
+          >
+            {loading ? 'Scanning…' : 'Scan My Emails'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={handleScanOutlook}
+            disabled={outlookLoading}
+          >
+            {outlookLoading ? 'Scanning…' : 'Scan Outlook Emails'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={handleGoogleCalendarSync}
+            disabled={syncLoading}
+          >
+            {syncLoading ? 'Syncing…' : '📅 Sync Google Calendar'}
+          </button>
+</div>
        </div>
 
 
-       {error && <div className="error-banner">{error}</div>}
+       <section
+         className="event-card"
+         style={{ marginBottom: '2rem' }}
+       >
+         <h2 style={{ fontSize: '1.15rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+           Upload Syllabus
+         </h2>
+         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '1.25rem' }}>
+           Upload a course syllabus PDF and Compass will extract exams, assignments, and deadlines.
+         </p>
 
+         <form
+           onSubmit={handleSyllabusUpload}
+           style={{ display: 'grid', gap: '1rem' }}
+         >
+           <label style={{ display: 'grid', gap: '0.45rem' }}>
+             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Syllabus PDF</span>
+             <input
+               type="file"
+               accept="application/pdf,.pdf"
+               onChange={(e) => setSyllabusFile(e.target.files?.[0] || null)}
+               style={{
+                 width: '100%',
+                 padding: '0.75rem 1rem',
+                 borderRadius: '12px',
+                 border: '1px solid var(--border)',
+                 background: 'var(--bg-surface)',
+                 color: 'var(--text)',
+                 fontSize: '0.95rem',
+               }}
+             />
+           </label>
+
+           <label style={{ display: 'grid', gap: '0.45rem' }}>
+             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Course Name</span>
+             <input
+               type="text"
+               value={courseName}
+               onChange={(e) => setCourseName(e.target.value)}
+               placeholder="e.g. Introduction to Computer Science"
+               style={{
+                 width: '100%',
+                 padding: '0.75rem 1rem',
+                 borderRadius: '12px',
+                 border: '1px solid var(--border)',
+                 background: 'var(--bg-surface)',
+                 color: 'var(--text)',
+                 fontSize: '0.95rem',
+               }}
+             />
+           </label>
+
+           <label style={{ display: 'grid', gap: '0.45rem' }}>
+             <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Course Code</span>
+             <input
+               type="text"
+               value={courseCode}
+               onChange={(e) => setCourseCode(e.target.value)}
+               placeholder="e.g. CSE 131"
+               style={{
+                 width: '100%',
+                 padding: '0.75rem 1rem',
+                 borderRadius: '12px',
+                 border: '1px solid var(--border)',
+                 background: 'var(--bg-surface)',
+                 color: 'var(--text)',
+                 fontSize: '0.95rem',
+               }}
+             />
+           </label>
+
+           <button
+             type="submit"
+             className="btn btn-outline"
+             disabled={syllabusLoading || loading}
+             style={{ justifySelf: 'start' }}
+           >
+             {syllabusLoading ? 'Scanning syllabus with AI...' : 'Upload'}
+           </button>
+         </form>
+
+         {syllabusError && (
+           <div className="error-banner" style={{ marginTop: '1rem', marginBottom: 0 }}>
+             {syllabusError}
+           </div>
+         )}
+
+         {syllabusMessage && !syllabusLoading && (
+           <p
+             style={{
+               color: 'var(--accent-soft)',
+               fontSize: '0.9rem',
+               marginTop: '1rem',
+               marginBottom: 0,
+             }}
+           >
+             {syllabusMessage}
+           </p>
+         )}
+       </section>
+
+
+       {error && <div className="error-banner">{error}</div>}
+       {syncMessage && (
+        <p style={{ color: 'var(--accent-soft)', fontSize: '0.9rem', marginBottom: '1rem' }}>
+          {syncMessage}
+        </p>
+        )}
 
        {scanMeta && !loading && (
          <p
@@ -207,54 +472,73 @@ function Dashboard() {
        )}
 
 
-       {!loading && events.length === 0 && !error && (
+       {pendingLoading && !loading && (
+         <div className="loading-block">
+           <div className="spinner" />
+           <p>Loading events…</p>
+         </div>
+       )}
+
+
+       {!loading && !pendingLoading && pendingEvents.length === 0 && !error && (
          <div className="empty-state">
            <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem' }}>
              No events yet
            </p>
-           <p>Click &quot;Scan My Emails&quot; to find scheduling info in your inbox.</p>
+           <p>Click &quot;Scan My Emails&quot; or &quot;Scan Outlook&quot; to find scheduling info in your inbox.</p>
          </div>
        )}
 
 
        {!loading &&
-         events.map((item, index) => {
-           const { email, analysis } = item;
-           const title =
-             analysis?.eventTitle || email?.subject || 'Untitled event';
-           const schedulingType =
-             analysis?.schedulingType || 'other';
-           const priority = analysis?.priority ?? 3;
-
+         !pendingLoading &&
+         pendingEvents.map((event) => {
+           const isActing = actionPendingId === event.id;
 
            return (
-             <article key={email?.id || index} className="event-card">
+             <article key={event.id} className="event-card">
                <div className="event-card-header">
-                 <h2 className="event-title">{title}</h2>
+                 <h2 className="event-title">{event.title || 'Untitled event'}</h2>
                  <div className="event-meta">
-                   <PriorityStars priority={priority} />
-                   <span className="badge">{schedulingType}</span>
+                   <PriorityStars priority={event.priority} />
+                   <span className="badge">{event.scheduling_type || 'other'}</span>
                  </div>
                </div>
 
 
-               {analysis?.location && (
-                 <p className="event-detail">📍 {analysis.location}</p>
+               {event.location && (
+                 <p className="event-detail">📍 {event.location}</p>
                )}
-               {analysis?.eventDate && (
-                 <p className="event-detail">🗓 {analysis.eventDate}</p>
+               {event.raw_date && (
+                 <p className="event-detail">🗓 {event.raw_date}</p>
                )}
-               {analysis?.eventTime && (
-                 <p className="event-detail">🕐 {analysis.eventTime}</p>
-               )}
-               {email?.from && (
-                 <p className="event-detail">From: {email.from}</p>
+               {event.event_time && (
+                 <p className="event-detail">🕐 {event.event_time}</p>
                )}
 
 
-               {analysis?.reasoning && (
-                 <p className="event-reasoning">{analysis.reasoning}</p>
+               {event.description && (
+                 <p className="event-reasoning">{event.description}</p>
                )}
+
+               <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
+                 <button
+                   type="button"
+                   className="btn btn-primary"
+                   onClick={() => handleApprove(event.id)}
+                   disabled={isActing}
+                 >
+                   {isActing ? 'Working…' : '✓ Approve'}
+                 </button>
+                 <button
+                   type="button"
+                   className="btn btn-outline"
+                   onClick={() => handleReject(event.id)}
+                   disabled={isActing}
+                 >
+                   {isActing ? 'Working…' : '✗ Reject'}
+                 </button>
+               </div>
              </article>
            );
          })}

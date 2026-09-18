@@ -1,4 +1,5 @@
 # Compass 🧭
+
 ### AI-Powered College Companion
 
 Compass is a smart scheduling and productivity app built for college students. It uses Claude AI to automatically scan your emails, extract important dates and events, and organize everything into a unified calendar — so you never miss a deadline, career fair, internship opportunity, or class event again.
@@ -18,17 +19,19 @@ Compass is a smart scheduling and productivity app built for college students. I
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Backend | Node.js + Express |
-| Frontend | React + Vite |
-| Database | Supabase (PostgreSQL) |
-| AI | Anthropic Claude API (`claude-haiku-4-5-20251001`) |
-| Auth | Google OAuth 2.0, Microsoft OAuth 2.0 |
-| Email APIs | Gmail API, Microsoft Graph API |
-| Calendar | Google Calendar API |
-| PDF Parsing | pdf-parse |
-| File Uploads | multer |
+
+| Layer        | Technology                                         |
+| ------------ | -------------------------------------------------- |
+| Backend      | Node.js + Express                                  |
+| Frontend     | React + Vite                                       |
+| Database     | Supabase (PostgreSQL)                              |
+| AI           | Anthropic Claude API (`claude-haiku-4-5-20251001`) |
+| Auth         | Google OAuth 2.0, Microsoft OAuth 2.0              |
+| Email APIs   | Gmail API, Microsoft Graph API                     |
+| Calendar     | Google Calendar API                                |
+| PDF Parsing  | pdf-parse                                          |
+| File Uploads | multer                                             |
+
 
 ---
 
@@ -77,24 +80,26 @@ schedulo/
 2. Compass fetches the 20 most recent emails
 3. Each email (subject, sender, date, snippet) is sent to Claude
 4. Claude analyzes it and returns structured JSON:
-   - `hasSchedulingInfo` — is there anything schedulable here?
-   - `eventTitle` — what is this event called?
-   - `eventDate` — when is it?
-   - `eventTime` — what time?
-   - `priority` — 1 to 5 stars
-   - `schedulingType` — internship, exam, deadline, housing, etc.
+  - `hasSchedulingInfo` — is there anything schedulable here?
+  - `eventTitle` — what is this event called?
+  - `eventDate` — when is it?
+  - `eventTime` — what time?
+  - `priority` — 1 to 5 stars
+  - `schedulingType` — internship, exam, deadline, housing, etc.
 5. Detected events are saved to Supabase and shown on the dashboard
 6. Emails from the same thread are deduplicated — one card per conversation
 
 ### Priority System
 
-| Stars | Meaning | Examples |
-|---|---|---|
+
+| Stars | Meaning  | Examples                                                                   |
+| ----- | -------- | -------------------------------------------------------------------------- |
 | ⭐⭐⭐⭐⭐ | Critical | Active recruiter contact, internship offer, professor meeting about grades |
-| ⭐⭐⭐⭐ | High | New internship opportunity, exam deadline, career fair |
-| ⭐⭐⭐ | Medium | Office hours, club meeting, group project coordination |
-| ⭐⭐ | Low | Optional campus events, newsletters with dates |
-| ⭐ | Minimal | Marketing emails, automated notifications |
+| ⭐⭐⭐⭐  | High     | New internship opportunity, exam deadline, career fair                     |
+| ⭐⭐⭐   | Medium   | Office hours, club meeting, group project coordination                     |
+| ⭐⭐    | Low      | Optional campus events, newsletters with dates                             |
+| ⭐     | Minimal  | Marketing emails, automated notifications                                  |
+
 
 ### Syllabus Scanning
 
@@ -109,16 +114,18 @@ schedulo/
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/health` | Health check |
-| `GET` | `/api/auth/google` | Start Google OAuth flow |
-| `GET` | `/api/auth/google/callback` | Google OAuth callback |
-| `GET` | `/api/auth/microsoft` | Start Microsoft OAuth flow |
-| `GET` | `/api/auth/microsoft/callback` | Microsoft OAuth callback |
-| `GET` | `/api/emails/scan` | Scan Gmail inbox with Claude |
-| `GET` | `/api/emails/scan/outlook` | Scan Outlook inbox with Claude |
-| `GET` | `/api/events` | Fetch events for the logged-in user |
+
+| Method | Endpoint                       | Description                         |
+| ------ | ------------------------------ | ----------------------------------- |
+| `GET`  | `/api/health`                  | Health check                        |
+| `GET`  | `/api/auth/google`             | Start Google OAuth flow             |
+| `GET`  | `/api/auth/google/callback`    | Google OAuth callback               |
+| `GET`  | `/api/auth/microsoft`          | Start Microsoft OAuth flow          |
+| `GET`  | `/api/auth/microsoft/callback` | Microsoft OAuth callback            |
+| `GET`  | `/api/emails/scan`             | Scan Gmail inbox with Claude        |
+| `GET`  | `/api/emails/scan/outlook`     | Scan Outlook inbox with Claude      |
+| `GET`  | `/api/events`                  | Fetch events for the logged-in user |
+
 
 ---
 
@@ -126,33 +133,37 @@ schedulo/
 
 ### `users` table
 
-| Column | Type | Description |
-|---|---|---|
-| id | uuid | Primary key |
-| email | text | User's email address |
-| name | text | Display name |
-| google_tokens | jsonb | Stored Google OAuth tokens |
-| microsoft_tokens | jsonb | Stored Microsoft OAuth tokens |
-| created_at | timestamptz | Account creation time |
+
+| Column           | Type        | Description                   |
+| ---------------- | ----------- | ----------------------------- |
+| id               | uuid        | Primary key                   |
+| email            | text        | User's email address          |
+| name             | text        | Display name                  |
+| google_tokens    | jsonb       | Stored Google OAuth tokens    |
+| microsoft_tokens | jsonb       | Stored Microsoft OAuth tokens |
+| created_at       | timestamptz | Account creation time         |
+
 
 ### `events` table
 
-| Column | Type | Description |
-|---|---|---|
-| id | uuid | Primary key |
-| user_id | uuid | Foreign key to users |
-| title | text | Event name |
-| description | text | Claude's reasoning |
-| raw_date | text | Date as Claude extracted it |
-| event_time | text | Time as Claude extracted it |
-| start_time | timestamptz | Parsed start time (null if vague) |
-| location | text | Location if detected |
-| source | text | `gmail`, `outlook`, or `syllabus` |
-| scheduling_type | text | internship, exam, deadline, etc. |
-| priority | int | 1–5 star rating |
-| status | text | pending, approved, rejected |
-| thread_id | text | Gmail/Outlook thread ID for deduplication |
-| email_count | int | Number of emails in this thread |
+
+| Column          | Type        | Description                               |
+| --------------- | ----------- | ----------------------------------------- |
+| id              | uuid        | Primary key                               |
+| user_id         | uuid        | Foreign key to users                      |
+| title           | text        | Event name                                |
+| description     | text        | Claude's reasoning                        |
+| raw_date        | text        | Date as Claude extracted it               |
+| event_time      | text        | Time as Claude extracted it               |
+| start_time      | timestamptz | Parsed start time (null if vague)         |
+| location        | text        | Location if detected                      |
+| source          | text        | `gmail`, `outlook`, or `syllabus`         |
+| scheduling_type | text        | internship, exam, deadline, etc.          |
+| priority        | int         | 1–5 star rating                           |
+| status          | text        | pending, approved, rejected               |
+| thread_id       | text        | Gmail/Outlook thread ID for deduplication |
+| email_count     | int         | Number of emails in this thread           |
+
 
 ---
 
@@ -241,56 +252,56 @@ FRONTEND_URL=http://localhost:5173
 
 ### Phase 1 — Smart Scheduling (in progress)
 
-- [x] Gmail OAuth + email scanning
-- [x] Microsoft OAuth + Outlook scanning
-- [x] Claude AI event extraction
-- [x] Supabase database
-- [x] Dashboard with priority cards
-- [x] Calendar with day detail view
-- [x] Syllabus PDF parsing service
-- [ ] Syllabus upload API route + UI
-- [ ] Swipe to approve/reject events
-- [ ] Write approved events to Google Calendar
+- Gmail OAuth + email scanning
+- Microsoft OAuth + Outlook scanning
+- Claude AI event extraction
+- Supabase database
+- Dashboard with priority cards
+- Calendar with day detail view
+- Syllabus PDF parsing service
+- Syllabus upload API route + UI
+- Swipe to approve/reject events
+- Write approved events to Google Calendar
 
 ### Phase 2 — Academic Roadmap
 
-- [ ] Degree planner and 4-year course mapping
-- [ ] Canvas LMS integration
-- [ ] GPA impact simulator
-- [ ] Course registration deadline alerts
+- Degree planner and 4-year course mapping
+- Canvas LMS integration
+- GPA impact simulator
+- Course registration deadline alerts
 
 ### Phase 3 — Note Taking
 
-- [ ] Voice to text lecture recording
-- [ ] AI note generation
-- [ ] Flashcard generator
-- [ ] Exam study reminders
+- Voice to text lecture recording
+- AI note generation
+- Flashcard generator
+- Exam study reminders
 
 ### Phase 4 — Housing Intelligence
 
-- [ ] Dorm and off-campus comparisons
-- [ ] Lease review assistant
-- [ ] Housing deadline tracker
+- Dorm and off-campus comparisons
+- Lease review assistant
+- Housing deadline tracker
 
 ### Phase 5 — Career Navigator
 
-- [ ] Internship roadmap by year
-- [ ] AI resume builder
-- [ ] Interview prep generator
-- [ ] LinkedIn integration
+- Internship roadmap by year
+- AI resume builder
+- Interview prep generator
+- LinkedIn integration
 
 ### Phase 6 — Mobile App
 
-- [ ] iOS and Android via Expo React Native
-- [ ] Push notifications
-- [ ] Social scheduling
+- iOS and Android via Expo React Native
+- Push notifications
+- Social scheduling
 
 ### Phase 7 — Polish & Launch
 
-- [ ] Full UI redesign
-- [ ] Supabase Row Level Security
-- [ ] Google OAuth verification
-- [ ] App Store launch
+- Full UI redesign
+- Supabase Row Level Security
+- Google OAuth verification
+- App Store launch
 
 ---
 

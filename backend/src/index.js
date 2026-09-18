@@ -20,6 +20,8 @@ const googleRoutes = require('./routes/google');
 const microsoftRoutes = require('./routes/microsoft');
 const emailsRoutes = require('./routes/emails');
 const eventsRoutes = require('./routes/events');
+const syllabusRoutes = require('./routes/syllabus');
+const calendarSyncRoutes = require('./routes/calendarSync');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -39,6 +41,8 @@ app.use('/api', googleRoutes);
 app.use('/api', microsoftRoutes);
 app.use('/api', emailsRoutes);
 app.use('/api', eventsRoutes);
+app.use('/api', syllabusRoutes);
+app.use('/api', calendarSyncRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Compass API is running' });

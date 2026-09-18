@@ -6,6 +6,16 @@
 
 const { google } = require('googleapis');
 
+// Domains to never send to Claude (work / confidential senders)
+const BLOCKED_DOMAINS = [
+  'mass.gov',
+  'suffolkdistrictattorney.com',
+];
+
+function isBlockedEmail(from) {
+  if (!from) return false;
+  return BLOCKED_DOMAINS.some((domain) => from.toLowerCase().includes(domain));
+}
 
 const CLAUDE_SYSTEM_PROMPT = `You are a scheduling assistant for a college student. Analyze emails and extract ANY scheduling-related information broadly. This includes:
 - Specific meeting times or dates
@@ -29,6 +39,7 @@ PRIORITY RULES (1-5 scale):
 - Apartment tour scheduling or landlord communication
 - Financial aid or scholarship deadlines
 - Any meeting or deadline that directly affects the student's academic, career, or living situation
+- Virtual interviews or informational calls with potential employers
 
 
 4 = High (important but not immediately critical):
@@ -54,6 +65,7 @@ PRIORITY RULES (1-5 scale):
 - Campus housing info sessions or tours
 - Tutoring or academic support session scheduling
 - Canvas inbox messages from classmates about group projects
+- Zoom or virtual meetings related to job opportunities or recruiting
 
 
 2 = Low (optional or general interest):
@@ -244,6 +256,10 @@ async function scanGmailEmails(googleTokens) {
 // Analyze each email with Claude one at a time to avoid rate limits
 const results = [];
 for (const email of emails) {
+ if (isBlockedEmail(email.from)) {
+   console.log('Skipping confidential email from:', email.from);
+   continue;
+ }
  const analysis = await analyzeEmailWithClaude(email);
  results.push({ email, analysis });
  // Small delay between requests to respect rate limits

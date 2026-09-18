@@ -30,10 +30,14 @@ function parseEventDate(rawDate) {
   // Reject vague dates like "Summer 2026", "Fall 2025", etc.
   if (!/\d{1,2}/.test(trimmed) || !/\d{4}/.test(trimmed)) return null;
 
-  const isoMatch = trimmed.match(/\d{4}-\d{1,2}-\d{1,2}/);
+  const isoMatch = trimmed.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (isoMatch) {
-    const isoParsed = Date.parse(isoMatch[0]);
-    if (!Number.isNaN(isoParsed)) return new Date(isoParsed);
+    const [, y, m, d] = isoMatch;
+    // Construct in local time directly — Date.parse() on a date-only ISO
+    // string treats it as UTC midnight, which rolls back a day in any
+    // timezone behind UTC once local getters (getDate/getDay) are used.
+    const isoParsed = new Date(Number(y), Number(m) - 1, Number(d));
+    if (!Number.isNaN(isoParsed.getTime())) return isoParsed;
   }
 
   const slashMatch = trimmed.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);

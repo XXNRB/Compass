@@ -1,5 +1,8 @@
 {
   "name": "compass",
   "version": "1.0.0",
-  "description": "Compass AI College Companion"
+  "description": "Compass AI College Companion",
+  "dependencies": {
+    "pdf-parse": "^1.1.1"
+  }
 }
