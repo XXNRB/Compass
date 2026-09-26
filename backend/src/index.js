@@ -1,15 +1,22 @@
 const fs = require('fs');
 const path = require('path');
-const envPath = path.join(__dirname, '../.env');fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
-  const trimmed = line.trim();
-  if (!trimmed || trimmed[0] === '#') return;
-  const eqIndex = trimmed.indexOf('=');
-  if (eqIndex > 0) {
-    const key = trimmed.substring(0, eqIndex);
-    const val = trimmed.substring(eqIndex + 1);
-    process.env[key] = val;
+
+// Render injects env vars directly; only read the local .env file in development.
+if (process.env.NODE_ENV !== 'production') {
+  const envPath = path.join(__dirname, '../.env');
+  if (fs.existsSync(envPath)) {
+    fs.readFileSync(envPath, 'utf8').split('\n').forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed[0] === '#') return;
+      const eqIndex = trimmed.indexOf('=');
+      if (eqIndex > 0) {
+        const key = trimmed.substring(0, eqIndex);
+        const val = trimmed.substring(eqIndex + 1);
+        process.env[key] = val;
+      }
+    });
   }
-});
+}
 
 const express = require('express');
 const cors = require('cors');
