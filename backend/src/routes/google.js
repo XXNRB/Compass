@@ -10,8 +10,10 @@ const { supabase } = require('../config/supabase');
 const { rememberFrontendOrigin } = require('../config/frontend');
 
 
+// Trimmed and stripped of trailing slashes so a stray space or "/" in the
+// Render env var can't produce a broken redirect host or a "//dashboard" path.
 function getFrontendUrl() {
-  return process.env.FRONTEND_URL || 'http://localhost:5173';
+  return (process.env.FRONTEND_URL || 'http://localhost:5173').trim().replace(/\/+$/, '');
 }
 
 

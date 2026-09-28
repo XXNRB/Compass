@@ -44,11 +44,21 @@ app.use(cors({
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(morgan('dev'));
 app.use(express.json());
+// In production the frontend (Vercel) and API (Render) are different sites, so the
+// session cookie must be SameSite=None + Secure to be sent on cross-site requests.
+// Render terminates TLS at its proxy, so trust it or Express won't set Secure cookies.
+const isProduction = process.env.NODE_ENV === 'production';
+if (isProduction) app.set('trust proxy', 1);
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-session-secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: process.env.NODE_ENV === 'production', httpOnly: true, maxAge: 24 * 60 * 60 * 1000 },
+  cookie: {
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000,
+  },
 }));
 
 app.use('/api', googleRoutes);
