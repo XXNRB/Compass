@@ -7,7 +7,12 @@
 const express = require('express');
 const { google } = require('googleapis');
 const { supabase } = require('../config/supabase');
-const { rememberFrontendOrigin, getFrontendUrl } = require('../config/frontend');
+const { rememberFrontendOrigin } = require('../config/frontend');
+
+
+function getFrontendUrl() {
+  return process.env.FRONTEND_URL || 'http://localhost:5173';
+}
 
 
 const router = express.Router();
@@ -159,7 +164,7 @@ router.get('/auth/google/callback', async (req, res) => {
 
 
    // Redirect to dashboard with email so frontend can display it
-   const redirectUrl = `${getFrontendUrl(req)}/dashboard?email=${encodeURIComponent(userEmail)}&userId=${req.session.userId}&new=${isNewUser}`;
+   const redirectUrl = `${getFrontendUrl()}/dashboard?email=${encodeURIComponent(userEmail)}&userId=${req.session.userId}&new=${isNewUser}`;
    res.redirect(redirectUrl);
    } catch (error) {
    console.error('Google OAuth callback error:', error.message);
