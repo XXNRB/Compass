@@ -3,7 +3,16 @@ import axios from 'axios';
 import AppHeader from '../components/AppHeader.jsx';
 import Icon from '../components/Icon.jsx';
 import { PriorityTag } from '../components/Priority.jsx';
+import { EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
 import { API_BASE, authUrl } from '../api.js';
+
+
+// /u/<address>/ opens the right mailbox when several Google accounts are
+// signed in; /u/0/ (the first account) is the fallback for untagged events.
+function gmailThreadUrl(event) {
+ const account = event.email ? encodeURIComponent(event.email) : '0';
+ return `https://mail.google.com/mail/u/${account}/#inbox/${encodeURIComponent(event.thread_id)}`;
+}
 
 
 // A failed scan can mean three different things, and the fix differs for each:
@@ -95,6 +104,9 @@ function Dashboard() {
  const [approveMessage, setApproveMessage] = useState(null);
  const [dedupeLoading, setDedupeLoading] = useState(false);
  const [dedupeMessage, setDedupeMessage] = useState(null);
+ const [linkMessage, setLinkMessage] = useState(null);
+ const emailFilter = useEmailFilter();
+ const visibleEvents = pendingEvents.filter(emailFilter.isVisible);
 
  // Preview first, then confirm: removal is permanent.
  async function handleRemoveDuplicates() {
@@ -278,6 +290,16 @@ function Dashboard() {
  if (userIdFromUrl && userIdFromUrl !== 'undefined') {
  localStorage.setItem('compassUserId', userIdFromUrl);
 }
+   // Back from "Add another email"
+   const linkedEmail = params.get('linked');
+   if (linkedEmail || params.get('linkError')) {
+     setLinkMessage(
+       linkedEmail
+         ? { tone: 'success', text: `Connected ${linkedEmail}. Scan Gmail to pull in its events.` }
+         : { tone: 'error', text: 'Could not connect that Google account. Please try again.' },
+     );
+     window.history.replaceState({}, '', '/dashboard');
+   }
    fetchPendingEvents();
    fetchCanvasStatus();
    fetchPreferences();
@@ -304,6 +326,40 @@ function Dashboard() {
      setError(message);
    } finally {
      setActionPendingId(null);
+   }
+ }
+
+ // Optimistic: flip the checkbox now, roll back if the save fails.
+ async function handleToggleActionItem(eventId, index, done) {
+   const setDone = (value) =>
+     setPendingEvents((prev) =>
+       prev.map((event) =>
+         event.id === eventId
+           ? {
+               ...event,
+               action_items: event.action_items.map((item, i) =>
+                 i === index ? { ...item, done: value } : item,
+               ),
+             }
+           : event,
+       ),
+     );
+
+   setDone(done);
+   try {
+     const userId = localStorage.getItem('compassUserId') || '';
+     await axios.patch(
+       `${API_BASE}/events/${eventId}/action-items?userId=${userId}`,
+       { index, done },
+       { withCredentials: true },
+     );
+   } catch (err) {
+     setDone(!done);
+     const message =
+       err.response?.data?.error ||
+       err.response?.data?.message ||
+       'Failed to update action item.';
+     setError(message);
    }
  }
 
@@ -343,6 +399,9 @@ function Dashboard() {
 
 
      setScanMeta({ total: data.total, saved: data.saved });
+     if (data.failedAccounts?.length) {
+       setError(`Could not scan ${data.failedAccounts.join(', ')}. Try reconnecting ${data.failedAccounts.length > 1 ? 'those accounts' : 'that account'}.`);
+     }
      await fetchPendingEvents();
    } catch (err) {
      const { message, needsConnect } = describeScanError(err, 'Gmail');
@@ -511,6 +570,7 @@ function Dashboard() {
            )}
          </Notice>
        )}
+       {linkMessage && <Notice tone={linkMessage.tone}>{linkMessage.text}</Notice>}
        {approveMessage && <Notice tone="success">{approveMessage}</Notice>}
        {syncMessage && <Notice tone="success">{syncMessage}</Notice>}
        {dedupeMessage && <Notice tone="success">{dedupeMessage}</Notice>}
@@ -526,8 +586,14 @@ function Dashboard() {
          <section aria-labelledby="pending-heading">
            <h2 id="pending-heading" className="section-label">
              Pending review
-             {!pendingLoading && <span className="count">{pendingEvents.length}</span>}
+             {!pendingLoading && <span className="count">{visibleEvents.length}</span>}
            </h2>
+
+           <EmailFilter
+             accounts={emailFilter.accounts}
+             hidden={emailFilter.hidden}
+             onToggle={emailFilter.toggle}
+           />
 
            {loading && (
              <div className="loading-block">
@@ -550,9 +616,16 @@ function Dashboard() {
              </div>
            )}
 
-           {!loading && !pendingLoading && pendingEvents.length > 0 && (
+           {!loading && !pendingLoading && pendingEvents.length > 0 && visibleEvents.length === 0 && (
+             <div className="empty-state">
+               <strong>All events are filtered out</strong>
+               {pendingEvents.length} pending event{pendingEvents.length !== 1 ? 's are' : ' is'} hidden by the account filter above.
+             </div>
+           )}
+
+           {!loading && !pendingLoading && visibleEvents.length > 0 && (
              <div className="event-list">
-               {pendingEvents.map((event) => {
+               {visibleEvents.map((event) => {
                  const isActing = actionPendingId === event.id;
 
                  return (
@@ -592,6 +665,49 @@ function Dashboard() {
                        <p className="event-description">{event.description}</p>
                      )}
 
+                     {event.topics && (
+                       <p className="event-topics">
+                         <span className="event-subhead">Covers</span>
+                         {event.topics}
+                       </p>
+                     )}
+
+                     {Array.isArray(event.action_items) && event.action_items.length > 0 && (
+                       <div className="action-items">
+                         <span className="event-subhead">
+                           Action items
+                           <span className="action-items-count">
+                             {event.action_items.filter((item) => item.done).length}/{event.action_items.length}
+                           </span>
+                         </span>
+                         <ul className="checklist">
+                           {event.action_items.map((item, index) => (
+                             <li key={index}>
+                               <label className={`checklist-item${item.done ? ' is-done' : ''}`}>
+                                 <input
+                                   type="checkbox"
+                                   checked={!!item.done}
+                                   onChange={(e) => handleToggleActionItem(event.id, index, e.target.checked)}
+                                 />
+                                 <span>{item.text}</span>
+                               </label>
+                             </li>
+                           ))}
+                         </ul>
+                       </div>
+                     )}
+
+                     {event.source === 'gmail' && event.thread_id && (
+                       <a
+                         className="event-link"
+                         href={gmailThreadUrl(event)}
+                         target="_blank"
+                         rel="noopener noreferrer"
+                       >
+                         View original email
+                       </a>
+                     )}
+
                      <div className="event-actions">
                        <button
                          type="button"
@@ -621,6 +737,33 @@ function Dashboard() {
 
          {/* --- Sources & settings --- */}
          <aside className="stack" aria-label="Sources and settings">
+           <section className="card">
+             <h2 className="card-title">Email accounts</h2>
+             <p className="card-desc">
+               Scan Gmail checks every connected Gmail account.
+             </p>
+
+             {emailFilter.accounts.length > 0 ? (
+               <ul className="account-list">
+                 {emailFilter.accounts.map((account) => (
+                   <li key={account.id} className="account-row">
+                     <span className="status-dot" aria-hidden="true" />
+                     <span className="account-email">{account.email}</span>
+                     <span className="tag">{account.provider === 'outlook' ? 'Outlook' : 'Gmail'}</span>
+                   </li>
+                 ))}
+               </ul>
+             ) : (
+               <p className="card-desc">No accounts connected yet.</p>
+             )}
+
+             <div className="form-actions">
+               <a className="btn btn-outline" href={`${authUrl('google')}&link=1`}>
+                 Add another email
+               </a>
+             </div>
+           </section>
+
            <section className="card">
              <h2 className="card-title">Upload syllabus</h2>
              <p className="card-desc">

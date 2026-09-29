@@ -17,6 +17,10 @@ function isBlockedEmail(from) {
   return BLOCKED_DOMAINS.some((domain) => from.toLowerCase().includes(domain));
 }
 
+// Cap on email body length sent to Claude and stored in Supabase. Long
+// newsletters and reply chains otherwise blow up token cost and row size.
+const MAX_BODY_CHARS = 8000;
+
 const CLAUDE_SYSTEM_PROMPT = `You are a scheduling assistant for a college student. Analyze emails and extract ANY scheduling-related information broadly. This includes:
 - Specific meeting times or dates
 - Internship, job, or program start/end dates
@@ -28,7 +32,17 @@ const CLAUDE_SYSTEM_PROMPT = `You are a scheduling assistant for a college stude
 - Apartment tours or lease signing appointments
 
 
-PRIORITY RULES (1-5 scale):
+DEADLINES ARE THE MOST IMPORTANT THING YOU DETECT.
+Read the ENTIRE email body carefully for deadlines — they are often buried in the middle or end of the email, not the subject line.
+If the email mentions ANY specific due date or deadline the student must meet (e.g. "due Friday", "submit by March 3", "complete within 48 hours", "respond by end of day", "expires on June 1"):
+- Set hasSpecificDeadline to true
+- Set priority to 5, REGARDLESS of category. This overrides every other priority rule below. A deadline on a marketing-looking or low-category email is STILL priority 5.
+- Put the deadline date in eventDate and the deadline time (if any) in eventTime
+- Mention the deadline explicitly in reasoning
+Only vague, non-binding dates ("sometime this summer", "in the coming weeks") do NOT count as a specific deadline.
+
+
+PRIORITY RULES (1-5 scale, applied ONLY when there is no specific deadline):
 
 
 5 = Critical (directly affects academic standing, career, or housing):
@@ -103,13 +117,18 @@ CATEGORIES TO ALWAYS FLAG (hasSchedulingInfo = true):
 Return ONLY a valid JSON object with these fields:
 - hasSchedulingInfo (boolean): true if ANY scheduling info is present
 - eventTitle (string or null): name of the event or meeting
-- eventDate (string or null): the MOST SPECIFIC date mentioned. Prefer formats like "June 1, 2026" or "2026-06-01" over vague ranges like "Summer 2026". If multiple dates exist, pick the earliest upcoming one. If only a vague season is mentioned with no specific date, return null.- eventTime (string or null): specific time if mentioned, otherwise null
+- eventDate (string or null): the MOST SPECIFIC date mentioned. Prefer formats like "June 1, 2026" or "2026-06-01" over vague ranges like "Summer 2026". If there is a deadline, use the deadline date. Otherwise, if multiple dates exist, pick the earliest upcoming one. If only a vague season is mentioned with no specific date, return null.
+- eventTime (string or null): specific time if mentioned, otherwise null
 - location (string or null): location if mentioned
-- priority (number 1-5): use the priority rules above
-- schedulingType (string): one of "internship", "job", "academic", "assignment", "deadline", "course_registration", "housing", "career_event", "meeting_request", "availability_request", "financial", "health", "social", "other"- reasoning (string): brief explanation of priority assigned
+- hasSpecificDeadline (boolean): true if the email states a specific due date or deadline the student must meet
+- priority (number 1-5): 5 if hasSpecificDeadline is true; otherwise use the priority rules above
+- schedulingType (string): one of "internship", "job", "academic", "assignment", "deadline", "course_registration", "housing", "career_event", "meeting_request", "availability_request", "financial", "health", "social", "other"
+- actionItems (array of strings): specific, concrete things the student needs to do because of this email, each a short imperative phrase that includes the deadline when there is one (e.g. "Complete Roblox online assessment by Oct 3", "Submit housing application by Wednesday", "Reply with availability for a call"). Return [] if nothing is required.
+- topicsOrContent (string or null): for an exam, quiz, assignment, or assessment, what it covers (chapters, topics, format, length, allowed materials). null if not applicable or not stated.
+- reasoning (string): brief explanation of priority assigned
 
 
-If no scheduling info found return hasSchedulingInfo: false and null for other fields.`;
+If no scheduling info found return hasSchedulingInfo: false, hasSpecificDeadline: false, actionItems: [], and null for other fields.`;
 /**
 * Builds an OAuth2 client from stored Google tokens.
 */
@@ -136,7 +155,64 @@ function getHeader(headers, name) {
 
 
 /**
-* Extracts subject, from, date, snippet, and threadId from a Gmail message resource.
+* Decodes a Gmail base64url body part to a UTF-8 string.
+*/
+function decodeBase64Url(data) {
+ return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+}
+
+
+/**
+* Rough HTML-to-text for emails that have no text/plain part.
+*/
+function htmlToText(html) {
+ return html
+   .replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+   .replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6])>/gi, '\n')
+   .replace(/<[^>]+>/g, ' ')
+   .replace(/&nbsp;/gi, ' ')
+   .replace(/&amp;/gi, '&')
+   .replace(/&lt;/gi, '<')
+   .replace(/&gt;/gi, '>')
+   .replace(/&quot;/gi, '"')
+   .replace(/&#39;/gi, "'");
+}
+
+
+/**
+* Collects the decoded bodies of every part with the given MIME type,
+* walking nested multipart payloads. Attachments are skipped.
+*/
+function collectParts(part, mimeType, out = []) {
+ if (!part) return out;
+ if (part.mimeType === mimeType && part.body?.data && !part.filename) {
+   out.push(decodeBase64Url(part.body.data));
+ }
+ for (const child of part.parts || []) collectParts(child, mimeType, out);
+ return out;
+}
+
+
+/**
+* Extracts the plain-text body from a Gmail payload, falling back to
+* stripped HTML. Whitespace is collapsed and the result is capped.
+*/
+function extractPlainTextBody(payload) {
+ let text = collectParts(payload, 'text/plain').join('\n');
+ if (!text.trim()) {
+   text = htmlToText(collectParts(payload, 'text/html').join('\n'));
+ }
+ return text
+   .replace(/[ \t ]+/g, ' ')
+   .replace(/\s*\n\s*/g, '\n')
+   .replace(/\n{3,}/g, '\n\n')
+   .trim()
+   .slice(0, MAX_BODY_CHARS);
+}
+
+
+/**
+* Extracts subject, from, date, snippet, body, and threadId from a Gmail message resource.
 */
 function parseGmailMessage(message) {
  const headers = message.payload?.headers || [];
@@ -149,6 +225,26 @@ function parseGmailMessage(message) {
    from: getHeader(headers, 'From'),
    date: getHeader(headers, 'Date'),
    snippet: message.snippet || '',
+   body: extractPlainTextBody(message.payload),
+ };
+}
+
+
+/**
+* Normalizes Claude's output: guarantees an actionItems string array and
+* enforces the deadline rule (any specific deadline is priority 5) even if
+* the model forgot to apply it.
+*/
+function normalizeAnalysis(result) {
+ const actionItems = Array.isArray(result.actionItems)
+   ? result.actionItems.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
+   : [];
+
+ return {
+   ...result,
+   actionItems,
+   topicsOrContent: result.topicsOrContent || null,
+   priority: result.hasSpecificDeadline ? 5 : result.priority,
  };
 }
 
@@ -167,7 +263,10 @@ function parseClaudeJson(text) {
 /**
 * Sends one email to Claude and returns structured scheduling fields.
 *
-* @param {{ subject: string|null, from: string|null, date: string|null, snippet: string }} email
+* Uses the full body when available (Gmail) and falls back to the snippet
+* (Outlook's bodyPreview).
+*
+* @param {{ subject: string|null, from: string|null, date: string|null, snippet: string, body?: string }} email
 * @returns {Promise<object>}
 */
 async function analyzeEmailWithClaude(email) {
@@ -184,13 +283,14 @@ async function analyzeEmailWithClaude(email) {
      `Subject: ${email.subject || '(no subject)'}`,
      `From: ${email.from || '(unknown)'}`,
      `Date: ${email.date || '(unknown)'}`,
-     `Snippet: ${email.snippet || ''}`,
+     '',
+     email.body ? `Body:\n${email.body}` : `Snippet: ${email.snippet || ''}`,
    ].join('\n');
 
 
    const response = await client.messages.create({
      model: 'claude-haiku-4-5-20251001',
-     max_tokens: 512,
+     max_tokens: 1024,
      system: CLAUDE_SYSTEM_PROMPT,
      messages: [{ role: 'user', content: userContent }],
    });
@@ -202,9 +302,9 @@ async function analyzeEmailWithClaude(email) {
    }
 
 
-   const result = parseClaudeJson(textBlock.text);
+   const result = normalizeAnalysis(parseClaudeJson(textBlock.text));
    console.log('Claude analyzed:', email.subject, '→', result.hasSchedulingInfo, result.eventTitle || '');
-   return result; 
+   return result;
  } catch (error) {
    console.error('Claude email analysis failed:', error.message);
    return { hasSchedulingInfo: false };
@@ -215,11 +315,16 @@ async function analyzeEmailWithClaude(email) {
 /**
 * Fetches the 20 most recent Gmail messages and analyzes each with Claude.
 *
-* @param {object} googleTokens - OAuth tokens from the user's Google session
+* @param {object} googleTokens - OAuth tokens for the mailbox to scan
+* @param {{ onTokens?: (tokens: object) => void }} [options] - onTokens receives
+*   the merged token set whenever googleapis refreshes the access token
 * @returns {Promise<Array<{ email: object, analysis: object }>>}
 */
-async function scanGmailEmails(googleTokens) {
+async function scanGmailEmails(googleTokens, { onTokens } = {}) {
  const oauth2Client = createOAuth2Client(googleTokens);
+ if (onTokens) {
+   oauth2Client.on('tokens', (fresh) => onTokens({ ...googleTokens, ...fresh }));
+ }
  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
 
@@ -236,14 +341,13 @@ async function scanGmailEmails(googleTokens) {
  }
 
 
- // Fetch metadata (subject, from, date) and snippet for each message
+ // Fetch the full message (headers + MIME body parts) for each message
  const emails = await Promise.all(
    messageRefs.map(async (ref) => {
      const { data: message } = await gmail.users.messages.get({
        userId: 'me',
        id: ref.id,
-       format: 'metadata',
-       metadataHeaders: ['Subject', 'From', 'Date'],
+       format: 'full',
      });
 
 

@@ -9,6 +9,7 @@ const { ConfidentialClientApplication } = require('@azure/msal-node');
 const https = require('https');
 const { supabase } = require('../config/supabase');
 const { rememberFrontendOrigin, getFrontendUrl } = require('../config/frontend');
+const { upsertConnectedEmail } = require('../services/connectedEmails');
 
 
 const router = express.Router();
@@ -102,6 +103,7 @@ router.get('/auth/microsoft/callback', async (req, res) => {
    req.session[SESSION_TOKEN_KEY] = tokens;
 
    const userEmail = await fetchUserEmail(tokenResponse.accessToken);
+   req.session.microsoftEmail = userEmail;
 
    // --- Supabase: persist user profile and Microsoft tokens ---
    if (userEmail) {
@@ -155,6 +157,8 @@ router.get('/auth/microsoft/callback', async (req, res) => {
      } catch (dbError) {
        console.error('Supabase save error:', dbError.message);
      }
+
+     await upsertConnectedEmail(req.session.userId, userEmail, 'outlook', tokens);
    }
 
    // Redirect to dashboard with email so frontend can display it

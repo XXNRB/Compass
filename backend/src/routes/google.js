@@ -8,6 +8,7 @@ const express = require('express');
 const { google } = require('googleapis');
 const { supabase } = require('../config/supabase');
 const { rememberFrontendOrigin } = require('../config/frontend');
+const { upsertConnectedEmail } = require('../services/connectedEmails');
 
 
 // Trimmed and stripped of trailing slashes so a stray space or "/" in the
@@ -47,14 +48,20 @@ const SESSION_TOKEN_KEY = 'googleTokens';
 /**
 * GET /auth/google
 * Starts the OAuth flow by redirecting the user to Google's consent screen.
+* With ?link=1 and a signed-in session, the account is added to the current
+* user's connected emails instead of signing in as it.
 */
 router.get('/auth/google', (req, res) => {
  rememberFrontendOrigin(req);
+ const linking = req.query.link === '1' && !!req.session.userId;
+ req.session.linkGoogleAccount = linking;
+
  const oauth2Client = getOAuth2Client();
  const authUrl = oauth2Client.generateAuthUrl({
    access_type: 'offline',
    scope: SCOPES,
-   prompt: 'consent',
+   // select_account lets the user pick a different Google account to link
+   prompt: linking ? 'select_account consent' : 'consent',
  });
 
 
@@ -85,9 +92,6 @@ router.get('/auth/google/callback', async (req, res) => {
    oauth2Client.setCredentials(tokens);
 
 
-   req.session[SESSION_TOKEN_KEY] = tokens;
-
-
    const people = google.people({ version: 'v1', auth: oauth2Client });
    const { data } = await people.people.get({
      resourceName: 'people/me',
@@ -100,6 +104,23 @@ router.get('/auth/google/callback', async (req, res) => {
    );
    const userEmail =
      primaryEmail?.value || data.emailAddresses?.[0]?.value || null;
+
+
+   // "Add another email": attach this mailbox to the signed-in user and leave
+   // the session's primary Google login (used for Calendar) untouched.
+   const linking = req.session.linkGoogleAccount && req.session.userId;
+   req.session.linkGoogleAccount = false;
+   if (linking) {
+     if (userEmail) {
+       await upsertConnectedEmail(req.session.userId, userEmail, 'gmail', tokens);
+     }
+     const linkedParam = userEmail ? `linked=${encodeURIComponent(userEmail)}` : 'linkError=1';
+     return res.redirect(`${getFrontendUrl()}/dashboard?${linkedParam}`);
+   }
+
+
+   req.session[SESSION_TOKEN_KEY] = tokens;
+   req.session.googleEmail = userEmail;
 
 
    // --- Supabase: persist user profile and Google tokens ---
@@ -162,6 +183,9 @@ router.get('/auth/google/callback', async (req, res) => {
      } catch (dbError) {
        console.error('Supabase save error:', dbError.message);
      }
+
+     // The sign-in account is always one of the user's connected emails
+     await upsertConnectedEmail(req.session.userId, userEmail, 'gmail', tokens);
    }
 
 

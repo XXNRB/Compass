@@ -3,6 +3,7 @@ import axios from 'axios';
 import AppHeader from '../components/AppHeader.jsx';
 import Icon from '../components/Icon.jsx';
 import { PriorityTag, clampPriority } from '../components/Priority.jsx';
+import { EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
 import { API_BASE } from '../api.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -151,6 +152,8 @@ function Calendar() {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  const emailFilter = useEmailFilter();
+  const { isVisible } = emailFilter;
 
   useEffect(() => {
     setUserEmail(localStorage.getItem('compassUserEmail') || 'Not signed in');
@@ -183,7 +186,7 @@ function Calendar() {
   const { scheduled, unscheduled } = useMemo(() => {
     const withDates = [];
     const withoutDates = [];
-    events.forEach((event) => {
+    events.filter(isVisible).forEach((event) => {
       const parsed = parseEventDate(event.raw_date);
       if (parsed) {
         withDates.push({ ...event, parsedDate: parsed });
@@ -193,7 +196,7 @@ function Calendar() {
     });
     console.log('Scheduled:', withDates.length, 'Unscheduled:', withoutDates.length);
     return { scheduled: withDates, unscheduled: withoutDates };
-  }, [events]);
+  }, [events, isVisible]);
 
   const monthGrid = useMemo(() => buildMonthGrid(viewDate), [viewDate]);
   const today = new Date();
@@ -246,6 +249,12 @@ function Calendar() {
             </button>
           </div>
         </div>
+
+        <EmailFilter
+          accounts={emailFilter.accounts}
+          hidden={emailFilter.hidden}
+          onToggle={emailFilter.toggle}
+        />
 
         {error && (
           <div className="notice notice--error" role="alert">

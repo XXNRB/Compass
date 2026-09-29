@@ -172,4 +172,62 @@ router.patch('/events/:id', async (req, res) => {
 });
 
 
+/**
+* PATCH /events/:id/action-items
+* Checks or unchecks one action item on an event. Body: { index, done }.
+*/
+router.patch('/events/:id/action-items', async (req, res) => {
+ const userId = req.session.userId || req.query.userId || (req.body && req.body.userId);
+ const { index, done } = req.body || {};
+
+ if (!userId) {
+   return res.status(401).json({ error: 'Not authenticated' });
+ }
+
+ if (!Number.isInteger(index) || typeof done !== 'boolean') {
+   return res.status(400).json({ error: 'index (integer) and done (boolean) are required' });
+ }
+
+ try {
+   const { data: event, error: fetchError } = await supabase
+     .from('events')
+     .select('action_items')
+     .eq('id', req.params.id)
+     .eq('user_id', userId)
+     .maybeSingle();
+
+   if (fetchError) {
+     console.error('Supabase event fetch error:', fetchError.message);
+     return res.status(500).json({ error: 'Failed to fetch event' });
+   }
+
+   if (!event) {
+     return res.status(404).json({ error: 'Event not found' });
+   }
+
+   const items = Array.isArray(event.action_items) ? [...event.action_items] : [];
+   if (index < 0 || index >= items.length) {
+     return res.status(400).json({ error: 'Action item index out of range' });
+   }
+   items[index] = { ...items[index], done };
+
+   const { error: updateError } = await supabase
+     .from('events')
+     .update({ action_items: items })
+     .eq('id', req.params.id)
+     .eq('user_id', userId);
+
+   if (updateError) {
+     console.error('Supabase action item update error:', updateError.message);
+     return res.status(500).json({ error: 'Failed to update action item' });
+   }
+
+   res.json({ success: true, actionItems: items });
+ } catch (err) {
+   console.error('Action item update error:', err.message);
+   res.status(500).json({ error: 'Failed to update action item' });
+ }
+});
+
+
 module.exports = router;
