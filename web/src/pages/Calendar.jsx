@@ -2,8 +2,11 @@ import { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import AppHeader from '../components/AppHeader.jsx';
 import Icon from '../components/Icon.jsx';
-import { PriorityTag, clampPriority } from '../components/Priority.jsx';
-import { EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
+import { PriorityTag } from '../components/Priority.jsx';
+import { AccountTag, EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
+import { SourceBadge, SourceLegend, TypeBadge, sourceKey } from '../components/EventBadges.jsx';
+import WeekView from '../components/WeekView.jsx';
+import { formatTimeRange, getEventTiming, isSameDay } from '../lib/eventTime.js';
 import { API_BASE } from '../api.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -13,59 +16,14 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-const DAY_HOURS = Array.from({ length: 16 }, (_, i) => i + 7);
+const VIEW_KEY = 'compassCalendarView';
 
-function parseEventDate(rawDate) {
-  if (!rawDate || typeof rawDate !== 'string') return null;
-  const trimmed = rawDate.trim();
-  if (!trimmed) return null;
-
-  // Only parse if it contains a specific day number
-  // Reject vague dates like "Summer 2026", "Fall 2025", etc.
-  if (!/\d{1,2}/.test(trimmed) || !/\d{4}/.test(trimmed)) return null;
-
-  const isoMatch = trimmed.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (isoMatch) {
-    const [, y, m, d] = isoMatch;
-    // Construct in local time directly — Date.parse() on a date-only ISO
-    // string treats it as UTC midnight, which rolls back a day in any
-    // timezone behind UTC once local getters (getDate/getDay) are used.
-    const isoParsed = new Date(Number(y), Number(m) - 1, Number(d));
-    if (!Number.isNaN(isoParsed.getTime())) return isoParsed;
+function readView() {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'week' ? 'week' : 'month';
+  } catch {
+    return 'month';
   }
-
-  const slashMatch = trimmed.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-  if (slashMatch) {
-    const [, m, d, y] = slashMatch;
-    const year = y.length === 2 ? 2000 + Number(y) : Number(y);
-    const slashParsed = new Date(year, Number(m) - 1, Number(d));
-    if (!Number.isNaN(slashParsed.getTime())) return slashParsed;
-  }
-
-  // Handle "Month Day, Year" format e.g. "June 4, 2026"
-  const writtenMatch = trimmed.match(/([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/);
-  if (writtenMatch) {
-    const months = ['january', 'february', 'march', 'april', 'may', 'june',
-      'july', 'august', 'september', 'october', 'november', 'december'];
-    const monthIndex = months.indexOf(writtenMatch[1].toLowerCase());
-    if (monthIndex !== -1) {
-      const written = new Date(
-        Number(writtenMatch[3]),
-        monthIndex,
-        Number(writtenMatch[2]),
-      );
-      if (!Number.isNaN(written.getTime())) return written;
-    }
-  }
-  return null;
-}
-
-function isSameDay(a, b) {
-  return (
-    a.getFullYear() === b.getFullYear()
-    && a.getMonth() === b.getMonth()
-    && a.getDate() === b.getDate()
-  );
 }
 
 function buildMonthGrid(viewDate) {
@@ -91,46 +49,39 @@ function buildMonthGrid(viewDate) {
   return cells;
 }
 
-
-function getEventTimeLabel(event) {
-    return event.event_time || event.time || '';
-  }
-
-function getEventLocation(event) {
-  return event.location || event.venue || event.place || 'No location';
+function startOfWeek(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() - date.getDay());
 }
 
-function parseEventHour(event) {
-  const value = getEventTimeLabel(event) || event.raw_date || '';
-  if (!value) return null;
-  const timeMatch = value.match(/(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?/i);
-  if (!timeMatch) return null;
-
-  let hour = Number(timeMatch[1]);
-  const period = timeMatch[3]?.toUpperCase();
-
-  if (period === 'PM' && hour < 12) hour += 12;
-  if (period === 'AM' && hour === 12) hour = 0;
-  if (Number.isNaN(hour) || hour < 7 || hour > 22) return null;
-
-  return hour;
+// All-day events first, then by start time.
+function byStart(a, b) {
+  const sa = a.timing.start ?? -1;
+  const sb = b.timing.start ?? -1;
+  return sa - sb;
 }
 
-function formatHourLabel(hour24) {
-  const suffix = hour24 >= 12 ? 'PM' : 'AM';
-  const hour12 = hour24 % 12 || 12;
-  return `${hour12}:00 ${suffix}`;
+function timeLabel(event) {
+  if (event.timing.start === null) return event.event_time || 'All day';
+  return formatTimeRange(event.timing.start, event.timing.end);
+}
+
+const SHORT_MONTHS = MONTH_NAMES.map((name) => name.slice(0, 3));
+
+// "Oct 4 – 10, 2026", "Sep 27 – Oct 3, 2026", "Dec 27, 2026 – Jan 2, 2027"
+function weekLabel(weekStart) {
+  const weekEnd = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + 6);
+  const sameMonth = weekStart.getMonth() === weekEnd.getMonth();
+  const sameYear = weekStart.getFullYear() === weekEnd.getFullYear();
+  const start = `${SHORT_MONTHS[weekStart.getMonth()]} ${weekStart.getDate()}${sameYear ? '' : `, ${weekStart.getFullYear()}`}`;
+  const end = `${sameMonth ? '' : `${SHORT_MONTHS[weekEnd.getMonth()]} `}${weekEnd.getDate()}, ${weekEnd.getFullYear()}`;
+  return `${start} – ${end}`;
 }
 
 function formatDepartureTime(isoString) {
   if (!isoString) return null;
   const date = new Date(isoString);
   if (Number.isNaN(date.getTime())) return null;
-  const hours = date.getHours();
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const suffix = hours >= 12 ? 'PM' : 'AM';
-  const hour12 = hours % 12 || 12;
-  return `${hour12}:${minutes} ${suffix}`;
+  return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 function formatFullDate(date) {
@@ -148,11 +99,10 @@ function Calendar() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedDate, setSelectedDate] = useState(null);
-  const [viewDate, setViewDate] = useState(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1);
-  });
-  const emailFilter = useEmailFilter();
+  const [view, setView] = useState(readView);
+  // One date drives both views: month view shows its month, week view its week.
+  const [anchorDate, setAnchorDate] = useState(() => new Date());
+  const emailFilter = useEmailFilter(events);
   const { isVisible } = emailFilter;
 
   useEffect(() => {
@@ -168,7 +118,6 @@ function Calendar() {
 
         const { data } = await axios.get(url, { withCredentials: true });
         setEvents(data.events || []);
-        console.log('Events loaded:', data.events?.length, data.events);
       } catch (err) {
         const message = err.response?.data?.error
           || err.response?.data?.message
@@ -183,78 +132,105 @@ function Calendar() {
     fetchEvents();
   }, []);
 
+  function changeView(next) {
+    setView(next);
+    try {
+      localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      // Non-fatal: the view just won't be remembered.
+    }
+  }
+
   const { scheduled, unscheduled } = useMemo(() => {
     const withDates = [];
     const withoutDates = [];
     events.filter(isVisible).forEach((event) => {
-      const parsed = parseEventDate(event.raw_date);
-      if (parsed) {
-        withDates.push({ ...event, parsedDate: parsed });
+      const timing = getEventTiming(event);
+      if (timing.date) {
+        withDates.push({ ...event, timing });
       } else {
         withoutDates.push(event);
       }
     });
-    console.log('Scheduled:', withDates.length, 'Unscheduled:', withoutDates.length);
+    withDates.sort(byStart);
     return { scheduled: withDates, unscheduled: withoutDates };
   }, [events, isVisible]);
 
-  const monthGrid = useMemo(() => buildMonthGrid(viewDate), [viewDate]);
+  const monthStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
+  const weekStart = useMemo(() => startOfWeek(anchorDate), [anchorDate]);
+  const monthGrid = useMemo(
+    () => buildMonthGrid(new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1)),
+    [anchorDate],
+  );
   const today = new Date();
-  const activeDate = selectedDate || today;
 
   const selectedDayEvents = useMemo(
-    () => scheduled.filter((event) => isSameDay(event.parsedDate, activeDate)),
-    [activeDate, scheduled],
+    () => (selectedDate
+      ? scheduled.filter((event) => isSameDay(event.timing.date, selectedDate))
+      : []),
+    [selectedDate, scheduled],
   );
 
-  const selectedDayEventsByHour = useMemo(() => {
-    const grouped = new Map();
-    DAY_HOURS.forEach((hour) => grouped.set(hour, []));
-    selectedDayEvents.forEach((event) => {
-      const eventHour = parseEventHour(event);
-      if (eventHour !== null && grouped.has(eventHour)) {
-        grouped.get(eventHour).push(event);
-      }
-    });
-    return grouped;
-  }, [selectedDayEvents]);
-
-  function goToPreviousMonth() {
-    setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  function step(direction) {
+    setAnchorDate((prev) => (view === 'week'
+      ? new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() + 7 * direction)
+      : new Date(prev.getFullYear(), prev.getMonth() + direction, 1)));
   }
 
-  function goToNextMonth() {
-    setViewDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
-  }
-
+  const periodLabel = view === 'week'
+    ? weekLabel(weekStart)
+    : `${MONTH_NAMES[monthStart.getMonth()]} ${monthStart.getFullYear()}`;
 
   return (
     <div className="page">
       <AppHeader userEmail={userEmail} wide />
 
       <main className="container container--wide main">
-        <div className="page-head">
-          <h1 className="page-title">Calendar</h1>
+        <div className="page-head cal-head">
+          <div className="cal-head-left">
+            <h1 className="page-title">Calendar</h1>
+            <h2 className="cal-period">{periodLabel}</h2>
+          </div>
           <div className="cal-toolbar">
-            <button type="button" className="btn btn-ghost btn-icon" onClick={goToPreviousMonth} aria-label="Previous month">
-              <Icon name="chevron-left" />
+            <button type="button" className="btn btn-outline" onClick={() => setAnchorDate(new Date())}>
+              Today
             </button>
-            <h2 className="cal-month">
-              {MONTH_NAMES[viewDate.getMonth()]}
-              {' '}
-              {viewDate.getFullYear()}
-            </h2>
-            <button type="button" className="btn btn-ghost btn-icon" onClick={goToNextMonth} aria-label="Next month">
-              <Icon name="chevron-right" />
-            </button>
+            <div className="cal-nav">
+              <button
+                type="button"
+                className="btn btn-ghost btn-icon"
+                onClick={() => step(-1)}
+                aria-label={view === 'week' ? 'Previous week' : 'Previous month'}
+              >
+                <Icon name="chevron-left" />
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-icon"
+                onClick={() => step(1)}
+                aria-label={view === 'week' ? 'Next week' : 'Next month'}
+              >
+                <Icon name="chevron-right" />
+              </button>
+            </div>
+            <div className="segmented" role="group" aria-label="Calendar view">
+              {['month', 'week'].map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`segmented-option${view === option ? ' is-active' : ''}`}
+                  aria-pressed={view === option}
+                  onClick={() => changeView(option)}
+                >
+                  {option === 'month' ? 'Month' : 'Week'}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        <EmailFilter
-          accounts={emailFilter.accounts}
-          hidden={emailFilter.hidden}
-          onToggle={emailFilter.toggle}
-        />
+        <EmailFilter filter={emailFilter} />
+        <SourceLegend />
 
         {error && (
           <div className="notice notice--error" role="alert">
@@ -271,56 +247,68 @@ function Calendar() {
         ) : (
           <>
             <section className={`cal-layout${selectedDate ? ' cal-layout--open' : ''}`}>
-              <div className="cal-board">
-                <div className="cal-weekdays">
-                  {WEEKDAYS.map((day) => (
-                    <div key={day} className="cal-weekday">{day}</div>
-                  ))}
-                </div>
-                <div className="cal-grid">
-                  {monthGrid.map((cell) => {
-                    const dayEvents = scheduled.filter((event) => isSameDay(event.parsedDate, cell.date));
-                    const isToday = isSameDay(cell.date, today);
-                    const isSelected = selectedDate && isSameDay(cell.date, selectedDate);
-                    const classes = [
-                      'cal-cell',
-                      !cell.isCurrentMonth && 'cal-cell--muted',
-                      isToday && 'cal-cell--today',
-                      isSelected && 'cal-cell--selected',
-                    ].filter(Boolean).join(' ');
+              {view === 'week' ? (
+                <WeekView
+                  weekStart={weekStart}
+                  events={scheduled}
+                  selectedDate={selectedDate}
+                  onSelectDay={(day) => setSelectedDate(new Date(day))}
+                />
+              ) : (
+                <div className="cal-board">
+                  <div className="cal-weekdays">
+                    {WEEKDAYS.map((day) => (
+                      <div key={day} className="cal-weekday">{day}</div>
+                    ))}
+                  </div>
+                  <div className="cal-grid">
+                    {monthGrid.map((cell) => {
+                      const dayEvents = scheduled.filter((event) => isSameDay(event.timing.date, cell.date));
+                      const isToday = isSameDay(cell.date, today);
+                      const isSelected = selectedDate && isSameDay(cell.date, selectedDate);
+                      const classes = [
+                        'cal-cell',
+                        !cell.isCurrentMonth && 'cal-cell--muted',
+                        isToday && 'cal-cell--today',
+                        isSelected && 'cal-cell--selected',
+                      ].filter(Boolean).join(' ');
 
-                    return (
-                      <button
-                        key={cell.date.toISOString()}
-                        type="button"
-                        className={classes}
-                        onClick={() => setSelectedDate(new Date(cell.date))}
-                        aria-label={`${formatFullDate(cell.date)}, ${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}`}
-                        aria-pressed={!!isSelected}
-                      >
-                        <span className="cal-daynum">{cell.date.getDate()}</span>
-                        <div className="cal-events">
-                          {dayEvents.slice(0, 4).map((event) => (
-                            <div
-                              key={event.id}
-                              className="cal-pill"
-                              data-level={clampPriority(event.priority)}
-                              title={event.title}
-                            >
-                              {event.title}
-                            </div>
-                          ))}
-                          {dayEvents.length > 4 ? (
-                            <span className="cal-more">
-                              +{dayEvents.length - 4} more
-                            </span>
-                          ) : null}
-                        </div>
-                      </button>
-                    );
-                  })}
+                      return (
+                        <button
+                          key={cell.date.toISOString()}
+                          type="button"
+                          className={classes}
+                          onClick={() => setSelectedDate(new Date(cell.date))}
+                          aria-label={`${formatFullDate(cell.date)}, ${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}`}
+                          aria-pressed={!!isSelected}
+                        >
+                          <span className="cal-daynum">{cell.date.getDate()}</span>
+                          <div className="cal-events">
+                            {dayEvents.slice(0, 4).map((event) => (
+                              <div
+                                key={event.id}
+                                className="cal-pill"
+                                data-source={sourceKey(event)}
+                                title={`${event.title} · ${timeLabel(event)}`}
+                              >
+                                {event.timing.start !== null && (
+                                  <span className="cal-pill-time">{formatTimeRange(event.timing.start, null)}</span>
+                                )}
+                                <span className="cal-pill-title">{event.title}</span>
+                              </div>
+                            ))}
+                            {dayEvents.length > 4 ? (
+                              <span className="cal-more">
+                                +{dayEvents.length - 4} more
+                              </span>
+                            ) : null}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {selectedDate ? (
                 <aside className="day-panel" aria-label="Day details">
@@ -352,53 +340,37 @@ function Calendar() {
                           <article
                             key={event.id}
                             className="day-event"
-                            data-level={clampPriority(event.priority)}
+                            data-source={sourceKey(event)}
                           >
                             <h4 className="day-event-title">{event.title}</h4>
                             <p className="fact">
                               <Icon name="clock" />
-                              {getEventTimeLabel(event) || 'Time not set'}
+                              {timeLabel(event)}
                             </p>
-                            <p className="fact">
-                              <Icon name="pin" />
-                              {getEventLocation(event)}
-                            </p>
+                            {event.location && (
+                              <p className="fact">
+                                <Icon name="pin" />
+                                {event.location}
+                              </p>
+                            )}
                             {event.status === 'approved' && formatDepartureTime(event.departure_time) && (
                               <p className="fact">
                                 <Icon name="navigation" />
                                 Depart by {formatDepartureTime(event.departure_time)}
                               </p>
                             )}
-                            <PriorityTag priority={event.priority} />
+                            <div className="day-event-badges">
+                              <SourceBadge event={event} />
+                              <TypeBadge event={event} />
+                              <PriorityTag priority={event.priority} />
+                            </div>
+                            <AccountTag
+                              email={event.source_email}
+                              color={emailFilter.colorFor(event.source_email)}
+                            />
                           </article>
                         ))
                       )}
-                    </div>
-
-                    <div>
-                      <h4 className="section-label">Timeline</h4>
-                      <div className="timeline">
-                        {DAY_HOURS.map((hour) => {
-                          const hourlyEvents = selectedDayEventsByHour.get(hour) || [];
-                          return (
-                            <div key={hour} className="timeline-row">
-                              <span className="timeline-hour">{formatHourLabel(hour)}</span>
-                              <div className="timeline-slot">
-                                {hourlyEvents.map((event) => (
-                                  <div
-                                    key={`${event.id}-hour-${hour}`}
-                                    className="cal-pill"
-                                    data-level={clampPriority(event.priority)}
-                                    title={event.title}
-                                  >
-                                    {event.title}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
                     </div>
                   </div>
                 </aside>
@@ -418,10 +390,14 @@ function Calendar() {
                     <article
                       key={event.id}
                       className="unscheduled-item"
-                      data-level={clampPriority(event.priority)}
+                      data-source={sourceKey(event)}
                     >
                       <p>{event.title}</p>
                       {event.raw_date ? <p>{event.raw_date}</p> : null}
+                      <div className="day-event-badges">
+                        <SourceBadge event={event} />
+                        <TypeBadge event={event} />
+                      </div>
                     </article>
                   ))}
                 </div>

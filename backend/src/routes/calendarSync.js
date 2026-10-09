@@ -106,10 +106,13 @@ router.get('/calendar/sync/google', async (req, res) => {
       if (googleEvent.status === 'cancelled') continue;
       const googleEventId = googleEvent.id;
       if (!googleEventId) continue;
+      // Timed events only; all-day events have end.date, which the calendar
+      // shows in the all-day row anyway.
+      const endTime = googleEvent.end?.dateTime || null;
 
       const { data: existing, error: lookupError } = await supabase
         .from('events')
-        .select('id')
+        .select('id, end_time')
         .eq('user_id', userId)
         .eq('source_id', googleEventId)
         .maybeSingle();
@@ -119,7 +122,17 @@ router.get('/calendar/sync/google', async (req, res) => {
         continue;
       }
 
-      if (existing) continue;
+      if (existing) {
+        // Backfill durations for events imported before end_time was saved.
+        if (endTime && !existing.end_time) {
+          const { error: backfillError } = await supabase
+            .from('events')
+            .update({ end_time: endTime })
+            .eq('id', existing.id);
+          if (backfillError) console.error('Supabase calendar end_time backfill error:', backfillError.message);
+        }
+        continue;
+      }
 
       const { rawDate, eventTime, startTime } = parseGoogleEventTiming(googleEvent.start);
       const title = googleEvent.summary || 'Untitled event';
@@ -142,6 +155,7 @@ router.get('/calendar/sync/google', async (req, res) => {
         raw_date: rawDate,
         event_time: eventTime,
         start_time: startTime,
+        end_time: endTime,
         location: googleEvent.location || null,
         source: 'google_calendar',
         source_id: googleEventId,

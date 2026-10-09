@@ -3,14 +3,14 @@ import axios from 'axios';
 import AppHeader from '../components/AppHeader.jsx';
 import Icon from '../components/Icon.jsx';
 import { PriorityTag } from '../components/Priority.jsx';
-import { EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
+import { AccountTag, EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
 import { API_BASE, authUrl } from '../api.js';
 
 
 // /u/<address>/ opens the right mailbox when several Google accounts are
 // signed in; /u/0/ (the first account) is the fallback for untagged events.
 function gmailThreadUrl(event) {
- const account = event.email ? encodeURIComponent(event.email) : '0';
+ const account = event.source_email ? encodeURIComponent(event.source_email) : '0';
  return `https://mail.google.com/mail/u/${account}/#inbox/${encodeURIComponent(event.thread_id)}`;
 }
 
@@ -105,7 +105,7 @@ function Dashboard() {
  const [dedupeLoading, setDedupeLoading] = useState(false);
  const [dedupeMessage, setDedupeMessage] = useState(null);
  const [linkMessage, setLinkMessage] = useState(null);
- const emailFilter = useEmailFilter();
+ const emailFilter = useEmailFilter(pendingEvents);
  const visibleEvents = pendingEvents.filter(emailFilter.isVisible);
 
  // Preview first, then confirm: removal is permanent.
@@ -292,11 +292,17 @@ function Dashboard() {
 }
    // Back from "Add another email"
    const linkedEmail = params.get('linked');
-   if (linkedEmail || params.get('linkError')) {
+   const linkError = params.get('linkError');
+   if (linkedEmail || linkError) {
      setLinkMessage(
        linkedEmail
          ? { tone: 'success', text: `Connected ${linkedEmail}. Scan Gmail to pull in its events.` }
-         : { tone: 'error', text: 'Could not connect that Google account. Please try again.' },
+         : {
+             tone: 'error',
+             text: linkError === 'session'
+               ? 'Your session expired. Sign in with Google again, then add the other account.'
+               : 'Could not save that Google account. Please try again.',
+           },
      );
      window.history.replaceState({}, '', '/dashboard');
    }
@@ -581,6 +587,8 @@ function Dashboard() {
          </Notice>
        )}
 
+       <EmailFilter filter={emailFilter} />
+
        <div className="dash-grid">
          {/* --- Pending events --- */}
          <section aria-labelledby="pending-heading">
@@ -588,12 +596,6 @@ function Dashboard() {
              Pending review
              {!pendingLoading && <span className="count">{visibleEvents.length}</span>}
            </h2>
-
-           <EmailFilter
-             accounts={emailFilter.accounts}
-             hidden={emailFilter.hidden}
-             onToggle={emailFilter.toggle}
-           />
 
            {loading && (
              <div className="loading-block">
@@ -637,6 +639,8 @@ function Dashboard() {
                          <span className="tag">{event.scheduling_type || 'other'}</span>
                        </div>
                      </div>
+
+                     <AccountTag email={event.source_email} color={emailFilter.colorFor(event.source_email)} />
 
                      {(event.raw_date || event.event_time || event.location) && (
                        <div className="event-facts">
@@ -746,8 +750,8 @@ function Dashboard() {
              {emailFilter.accounts.length > 0 ? (
                <ul className="account-list">
                  {emailFilter.accounts.map((account) => (
-                   <li key={account.id} className="account-row">
-                     <span className="status-dot" aria-hidden="true" />
+                   <li key={account.email} className="account-row">
+                     <span className="account-dot" style={{ background: account.color }} aria-hidden="true" />
                      <span className="account-email">{account.email}</span>
                      <span className="tag">{account.provider === 'outlook' ? 'Outlook' : 'Gmail'}</span>
                    </li>
