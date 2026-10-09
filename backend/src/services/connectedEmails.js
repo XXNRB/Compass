@@ -10,10 +10,10 @@ const { supabase } = require('../config/supabase');
 /**
  * Inserts or refreshes the tokens for one (user, email, provider) account.
  * Existing rows keep their refresh_token if the new token set lacks one —
- * Google only returns it on the first consent.
+ * Google only returns it on the first consent. Returns true if the row was saved.
  */
 async function upsertConnectedEmail(userId, email, provider, tokens) {
-  if (!userId || !email) return;
+  if (!userId || !email) return false;
 
   const { data: existing, error: lookupError } = await supabase
     .from('connected_emails')
@@ -25,7 +25,7 @@ async function upsertConnectedEmail(userId, email, provider, tokens) {
 
   if (lookupError) {
     console.error('Supabase connected email lookup error:', lookupError.message);
-    return;
+    return false;
   }
 
   if (existing) {
@@ -38,13 +38,14 @@ async function upsertConnectedEmail(userId, email, provider, tokens) {
       .update({ tokens: merged })
       .eq('id', existing.id);
     if (error) console.error('Supabase connected email update error:', error.message);
-    return;
+    return !error;
   }
 
   const { error } = await supabase
     .from('connected_emails')
     .insert({ user_id: userId, email, provider, tokens });
   if (error) console.error('Supabase connected email insert error:', error.message);
+  return !error;
 }
 
 

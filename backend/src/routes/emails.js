@@ -116,10 +116,10 @@ router.get('/emails/scan', async (req, res) => {
 
          if (existing) {
            // Thread already tracked — bump count; refresh title/description if higher priority
-           // Also backfills the account on rows saved before events.email existed
+           // Also backfills the account on rows saved before events.source_email existed
            const updatePayload = {
              email_count: (existing.email_count || 1) + 1,
-             email: item.accountEmail,
+             source_email: item.accountEmail,
            };
 
 
@@ -158,7 +158,7 @@ router.get('/emails/scan', async (req, res) => {
         event_time: item.analysis.eventTime || null,
         location: item.analysis.location || null,
         source: 'gmail',
-        email: item.accountEmail,
+        source_email: item.accountEmail,
         scheduling_type: item.analysis.schedulingType || 'other',
         priority: newPriority,
         status: 'pending',
@@ -245,7 +245,7 @@ router.get('/emails/scan/outlook', async (req, res) => {
             event_time: item.analysis.eventTime || null,
             location: item.analysis.location || null,
             source: 'outlook',
-            email: req.session.microsoftEmail || null,
+            source_email: req.session.microsoftEmail || null,
             scheduling_type: item.analysis.schedulingType || 'other',
             priority: newPriority,
             status: 'pending',

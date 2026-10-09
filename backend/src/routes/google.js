@@ -53,7 +53,14 @@ const SESSION_TOKEN_KEY = 'googleTokens';
 */
 router.get('/auth/google', (req, res) => {
  rememberFrontendOrigin(req);
- const linking = req.query.link === '1' && !!req.session.userId;
+ const linking = req.query.link === '1';
+
+ // Linking needs to know whose account to attach to. Without a session (e.g.
+ // it expired or the server restarted), don't fall through to a normal
+ // sign-in: that would silently create a separate user for the new address.
+ if (linking && !req.session.userId) {
+   return res.redirect(`${getFrontendUrl()}/dashboard?linkError=session`);
+ }
  req.session.linkGoogleAccount = linking;
 
  const oauth2Client = getOAuth2Client();
@@ -111,10 +118,10 @@ router.get('/auth/google/callback', async (req, res) => {
    const linking = req.session.linkGoogleAccount && req.session.userId;
    req.session.linkGoogleAccount = false;
    if (linking) {
-     if (userEmail) {
-       await upsertConnectedEmail(req.session.userId, userEmail, 'gmail', tokens);
-     }
-     const linkedParam = userEmail ? `linked=${encodeURIComponent(userEmail)}` : 'linkError=1';
+     const saved = userEmail
+       ? await upsertConnectedEmail(req.session.userId, userEmail, 'gmail', tokens)
+       : false;
+     const linkedParam = saved ? `linked=${encodeURIComponent(userEmail)}` : 'linkError=save';
      return res.redirect(`${getFrontendUrl()}/dashboard?${linkedParam}`);
    }
 
