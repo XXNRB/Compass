@@ -59,10 +59,39 @@ router.post('/syllabus/upload', upload.single('syllabus'), async (req, res) => {
       });
     }
 
-    const pdfResult = await pdfParse(req.file.buffer);
-    const pdfText = pdfResult.text || '';
+    // multer's memoryStorage hands us a Buffer; pass it to pdf-parse as-is.
+    let pdfText;
+    try {
+      const pdfResult = await pdfParse(req.file.buffer);
+      pdfText = pdfResult.text || '';
+    } catch (pdfError) {
+      console.error('Syllabus PDF could not be read:', pdfError.message);
+      return res.status(400).json({
+        success: false,
+        message: 'That file could not be read as a PDF. Please upload the syllabus as a PDF file.',
+      });
+    }
+    console.log(`Syllabus text extracted: ${pdfText.length} chars`);
 
-    const events = await extractEventsFromSyllabus(pdfText, courseInfo);
+    // Scanned (image-only) PDFs have no text layer; say so instead of
+    // reporting "0 events found".
+    if (!pdfText.trim()) {
+      return res.status(422).json({
+        success: false,
+        message: 'No text could be read from this PDF. If it is a scanned image, export it as a text PDF and try again.',
+      });
+    }
+
+    let events;
+    try {
+      events = await extractEventsFromSyllabus(pdfText, courseInfo);
+    } catch (extractError) {
+      console.error('Syllabus event extraction failed:', extractError.message);
+      return res.status(502).json({
+        success: false,
+        message: 'Could not extract events from this syllabus. Please try again.',
+      });
+    }
     let googleCalendarAdded = 0;
     let skippedDuplicates = 0;
 

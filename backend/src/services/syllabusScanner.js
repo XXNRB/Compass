@@ -6,7 +6,38 @@
 
 const { google } = require('googleapis');
 
-const SYLLABUS_SYSTEM_PROMPT = `You are an academic scheduling assistant. Extract ALL dates and events from this syllabus. Return ONLY a valid JSON array where each item has: eventTitle (string), eventDate (string in format YYYY-MM-DD if possible, otherwise as written), eventTime (string or null), location (string or null), priority (number 1-5: exams=5, quizzes=4, assignments=3, readings=2, other=1), schedulingType (one of: exam, quiz, assignment, class, office_hours, deadline, other), addToGoogleCalendar (boolean: true for exams quiz assignments deadlines, false for readings and other low priority items), reasoning (string). Return empty array if no dates found.`;
+const SYLLABUS_SYSTEM_PROMPT = `You are an academic scheduling assistant. You will receive the text of a course syllabus, extracted from a PDF. Text extraction flattens tables: a schedule row like "Week 3 | Tue Sep 16 | Recursion | Quiz 2 due 11:59 PM" may arrive as consecutive lines, and cells can run together without spaces. Reassemble rows from that context, and read every schedule entry plus any policy or grading sections that mention dates.
+
+Look specifically for:
+1. Quizzes - every quiz with its date AND time if one is given (in class, online, "due by 11:59 PM", open/close windows).
+2. Midterm exams - each midterm with date, time, and room. Watch for "Exam 1", "Midterm 2", "Test", "Prelim".
+3. Final exam - date, time, and room. It is often in a separate "Final Exam" or "Important dates" line rather than the weekly table.
+4. Projects and papers - every due date (proposals, drafts, checkpoints, final submissions, presentations), with the due time if given.
+5. Class schedule patterns - the regular meeting days, times, and location (e.g. "TuTh 10:00-11:20 AM, Ridgley 0016"), plus labs, studios, sections, and office hours.
+
+Rules:
+- Dates: return YYYY-MM-DD. Infer the year from the semester/term named in the syllabus. Resolve weekday or week-number references (e.g. "Thursday of Week 5") using the semester start date or the dates in the schedule table. If a date truly can't be pinned to a day, return it as written.
+- Times: keep ranges as ranges ("10:00-11:20 AM"). Use null when no time is stated; never invent a time.
+- Class meetings: if the schedule table lists dated class sessions, return each dated session as a "class" item (title it with the course and topic). If the syllabus only states a weekly pattern, return ONE "class" item: the first class date if known, the meeting time, the location, and the pattern (days of the week) in reasoning.
+- Do not return holidays, breaks, or "no class" days as events.
+- One item per event; don't duplicate the same quiz or exam because it appears in two places.
+- Keep reasoning to one short phrase.
+
+Return ONLY a valid JSON array (no prose, no markdown) where each item has:
+- eventTitle (string, include the course code when known, e.g. "CSE 3302 Midterm Exam 1")
+- eventDate (string, YYYY-MM-DD when possible)
+- eventTime (string or null)
+- location (string or null)
+- priority (number 1-5: final/midterm exams=5, quizzes and project/paper deadlines=4, assignments=3, class sessions and readings=2, other=1)
+- schedulingType (one of: exam, quiz, assignment, class, office_hours, deadline, other)
+- addToGoogleCalendar (boolean: true for exams, quizzes, assignments, project/paper deadlines; false for class sessions, readings, office hours, other)
+- reasoning (string)
+
+Return [] if the syllabus contains no dates.`;
+
+// Long semester schedules produce a lot of JSON; 4096 tokens used to cut the
+// array off mid-item, which failed to parse and silently returned no events.
+const SYLLABUS_MAX_TOKENS = 8000;
 
 /**
  * Builds an OAuth2 client from stored Google tokens.
@@ -35,6 +66,25 @@ function parseClaudeJson(text) {
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
   const jsonText = fenced ? fenced[1].trim() : trimmed;
   return JSON.parse(jsonText);
+}
+
+/**
+ * Recovers the complete items from a JSON array that was cut off mid-item
+ * (response hit max_tokens). Returns null if nothing usable is left.
+ *
+ * @param {string} text
+ * @returns {Array<object>|null}
+ */
+function salvageTruncatedArray(text) {
+  const start = text.indexOf('[');
+  const lastClose = text.lastIndexOf('}');
+  if (start === -1 || lastClose <= start) return null;
+  try {
+    const items = JSON.parse(`${text.slice(start, lastClose + 1)}]`);
+    return Array.isArray(items) && items.length ? items : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -133,58 +183,63 @@ function buildStartEnd(calendarDate, eventTime) {
  *
  * @param {string} pdfText - Raw text extracted from a syllabus PDF
  * @param {{ courseName?: string, courseCode?: string }|null|undefined} courseInfo
- * @returns {Promise<Array<object>>} Extracted events, or [] on failure / no dates
+ * @returns {Promise<Array<object>>} Extracted events ([] when the syllabus has no dates)
+ * @throws when the Claude call fails or its response can't be parsed, so the
+ *   route can report an error instead of "0 events found"
  */
 async function extractEventsFromSyllabus(pdfText, courseInfo) {
-  try {
-    if (!pdfText || typeof pdfText !== 'string' || !pdfText.trim()) {
-      return [];
-    }
-
-    const Anthropic = require('@anthropic-ai/sdk');
-    const client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    });
-
-    // Optional course context helps Claude label events clearly
-    const courseBits = [];
-    if (courseInfo?.courseCode) courseBits.push(`Course code: ${courseInfo.courseCode}`);
-    if (courseInfo?.courseName) courseBits.push(`Course name: ${courseInfo.courseName}`);
-
-    const userContent = [
-      ...(courseBits.length ? [courseBits.join('\n'), ''] : []),
-      'Syllabus text:',
-      pdfText,
-    ].join('\n');
-
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 4096,
-      system: SYLLABUS_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }],
-    });
-
-    const textBlock = response.content?.find((block) => block.type === 'text');
-    if (!textBlock?.text) {
-      return [];
-    }
-
-    const parsed = parseClaudeJson(textBlock.text);
-    if (!Array.isArray(parsed)) {
-      console.error('Syllabus extraction did not return a JSON array');
-      return [];
-    }
-
-    console.log(
-      'Syllabus events extracted:',
-      parsed.length,
-      courseInfo?.courseCode || courseInfo?.courseName || '',
-    );
-    return parsed;
-  } catch (error) {
-    console.error('Syllabus event extraction failed:', error.message);
+  if (!pdfText || typeof pdfText !== 'string' || !pdfText.trim()) {
     return [];
   }
+
+  const Anthropic = require('@anthropic-ai/sdk');
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  });
+
+  // Optional course context helps Claude label events clearly
+  const courseBits = [];
+  if (courseInfo?.courseCode) courseBits.push(`Course code: ${courseInfo.courseCode}`);
+  if (courseInfo?.courseName) courseBits.push(`Course name: ${courseInfo.courseName}`);
+
+  const userContent = [
+    ...(courseBits.length ? [courseBits.join('\n'), ''] : []),
+    'Syllabus text:',
+    pdfText,
+  ].join('\n');
+
+  const response = await client.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: SYLLABUS_MAX_TOKENS,
+    system: SYLLABUS_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userContent }],
+  });
+
+  const textBlock = response.content?.find((block) => block.type === 'text');
+  if (!textBlock?.text) {
+    throw new Error(`Claude returned no text (stop_reason: ${response.stop_reason})`);
+  }
+
+  let parsed;
+  if (response.stop_reason === 'max_tokens') {
+    // Keep every complete item rather than losing the whole syllabus.
+    parsed = salvageTruncatedArray(textBlock.text);
+    if (!parsed) throw new Error('Syllabus response was cut off before any complete event');
+    console.warn(`Syllabus response hit max_tokens; kept ${parsed.length} complete events`);
+  } else {
+    parsed = parseClaudeJson(textBlock.text);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('Syllabus extraction did not return a JSON array');
+  }
+
+  console.log(
+    'Syllabus events extracted:',
+    parsed.length,
+    courseInfo?.courseCode || courseInfo?.courseName || '',
+  );
+  return parsed;
 }
 
 /**
