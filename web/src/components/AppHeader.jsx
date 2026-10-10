@@ -1,5 +1,19 @@
+import { useSyncExternalStore } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import Icon from './Icon.jsx';
+import { getScanStatus, subscribeScanStatus } from '../lib/scanStatus.js';
+
+function ScanIndicator() {
+  const { status, message } = useSyncExternalStore(subscribeScanStatus, getScanStatus);
+  if (status === 'idle') return null;
+
+  return (
+    <span className={`scan-indicator scan-indicator--${status}`} role="status" aria-live="polite">
+      {status === 'running' ? <span className="spinner spinner--sm" aria-hidden="true" /> : <Icon name="check" />}
+      {message}
+    </span>
+  );
+}
 
 function AppHeader({ userEmail, wide = false }) {
   const signedIn = userEmail && userEmail !== 'Not signed in';
@@ -17,9 +31,12 @@ function AppHeader({ userEmail, wide = false }) {
           <NavLink to="/calendar">Calendar</NavLink>
         </nav>
 
-        <div className="user-chip">
-          {signedIn && <span className="avatar">{userEmail.charAt(0)}</span>}
-          <span>{userEmail}</span>
+        <div className="header-right">
+          <ScanIndicator />
+          <div className="user-chip">
+            {signedIn && <span className="avatar">{userEmail.charAt(0)}</span>}
+            <span>{userEmail}</span>
+          </div>
         </div>
       </div>
     </header>

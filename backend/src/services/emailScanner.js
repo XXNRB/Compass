@@ -126,6 +126,13 @@ CATEGORIES TO ALWAYS FLAG (hasSchedulingInfo = true):
 
 Return ONLY a valid JSON object with these fields:
 - isRejection (boolean): true if the email rejects the student's application (see REJECTIONS above)
+- applicationStage (string or null): for job/internship applications only, where this email puts the application:
+  "applied" = application received/submitted confirmation;
+  "interviewing" = the student is advancing: invited to interview, schedule a call, take an assessment, or "next steps" in the hiring process;
+  "offer" = an offer is extended ("pleased to offer you", "congratulations ... offer");
+  "rejected" = the application was turned down (always "rejected" when isRejection is true).
+  Rejection wins over everything: "thank you for interviewing ... unfortunately" is "rejected", not "interviewing". Use null for anything that isn't about a specific application (newsletters, job alerts, career fairs).
+- organization (string or null): the employer or program the email is about (e.g. "Fidelity", "Roblox"), not the applicant-tracking system that sent it
 - hasSchedulingInfo (boolean): true if ANY scheduling info is present, or if isRejection is true
 - eventTitle (string or null): name of the event or meeting
 - eventDate (string or null): the MOST SPECIFIC date mentioned. Prefer formats like "June 1, 2026" or "2026-06-01" over vague ranges like "Summer 2026". If there is a deadline, use the deadline date. Otherwise, if multiple dates exist, pick the earliest upcoming one. If only a vague season is mentioned with no specific date, return null.
@@ -139,7 +146,9 @@ Return ONLY a valid JSON object with these fields:
 - reasoning (string): brief explanation of priority assigned
 
 
-If no scheduling info found return isRejection: false, hasSchedulingInfo: false, hasSpecificDeadline: false, actionItems: [], and null for other fields.`;
+For "interviewing" or "offer", set priority to 5 and list the concrete next steps in actionItems (e.g. "Schedule interview with Fidelity by Oct 14", "Complete HireVue interview", "Respond to offer by Nov 1").
+
+If no scheduling info found return isRejection: false, applicationStage: null, organization: null, hasSchedulingInfo: false, hasSpecificDeadline: false, actionItems: [], and null for other fields.`;
 
 // Unambiguous rejection wording. Checked in code as well as in the prompt so a
 // rejection is never saved as a priority-5 "deadline" if the model misses it.
@@ -284,6 +293,7 @@ function normalizeAnalysis(result, email) {
      eventDate: null,
      eventTime: null,
      reasoning: REJECTION_NOTE,
+     applicationStage: 'rejected',
    };
  }
 
@@ -291,12 +301,19 @@ function normalizeAnalysis(result, email) {
    ? result.actionItems.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
    : [];
 
+ const stage = ['applied', 'interviewing', 'offer'].includes(result.applicationStage)
+   ? result.applicationStage
+   : null;
+ const advancing = stage === 'interviewing' || stage === 'offer';
+
  return {
    ...result,
    isRejection: false,
+   applicationStage: stage,
+   organization: result.organization || null,
    actionItems,
    topicsOrContent: result.topicsOrContent || null,
-   priority: result.hasSpecificDeadline ? 5 : result.priority,
+   priority: result.hasSpecificDeadline || advancing ? 5 : result.priority,
  };
 }
 
@@ -365,14 +382,16 @@ async function analyzeEmailWithClaude(email) {
 
 
 /**
-* Fetches the 20 most recent Gmail messages and analyzes each with Claude.
+* Fetches recent Gmail messages (the newest maxResults, optionally narrowed by a
+* Gmail search query such as "newer_than:1d") and analyzes each with Claude.
 *
 * @param {object} googleTokens - OAuth tokens for the mailbox to scan
-* @param {{ onTokens?: (tokens: object) => void }} [options] - onTokens receives
-*   the merged token set whenever googleapis refreshes the access token
+* @param {{ onTokens?: (tokens: object) => void, query?: string, maxResults?: number }} [options]
+*   onTokens receives the merged token set whenever googleapis refreshes the
+*   access token; query is a Gmail search string; maxResults caps the messages.
 * @returns {Promise<Array<{ email: object, analysis: object }>>}
 */
-async function scanGmailEmails(googleTokens, { onTokens } = {}) {
+async function scanGmailEmails(googleTokens, { onTokens, query, maxResults = 20 } = {}) {
  const oauth2Client = createOAuth2Client(googleTokens);
  if (onTokens) {
    oauth2Client.on('tokens', (fresh) => onTokens({ ...googleTokens, ...fresh }));
@@ -380,10 +399,11 @@ async function scanGmailEmails(googleTokens, { onTokens } = {}) {
  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
 
- // List the 20 newest message IDs in the inbox
+ // List the newest matching message IDs
  const listResponse = await gmail.users.messages.list({
    userId: 'me',
-   maxResults: 20,
+   maxResults,
+   ...(query ? { q: query } : {}),
  });
 
 

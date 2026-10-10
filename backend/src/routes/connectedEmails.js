@@ -11,7 +11,8 @@ const router = express.Router();
 
 /**
  * GET /connected-emails
- * Returns { accounts: [{ id, email, provider }] }. Never includes tokens.
+ * Returns { accounts: [{ id, email, provider }], primary }. Never includes tokens.
+ * primary is the Gmail address this session signed in with (null if unknown).
  */
 router.get('/connected-emails', async (req, res) => {
   const userId = req.session.userId || req.query.userId;
@@ -21,7 +22,7 @@ router.get('/connected-emails', async (req, res) => {
   }
 
   const accounts = await listConnectedEmails(userId);
-  res.json({ success: true, accounts });
+  res.json({ success: true, accounts, primary: req.session.googleEmail || null });
 });
 
 

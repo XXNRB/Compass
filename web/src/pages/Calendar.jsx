@@ -4,9 +4,10 @@ import AppHeader from '../components/AppHeader.jsx';
 import Icon from '../components/Icon.jsx';
 import { PriorityTag } from '../components/Priority.jsx';
 import { AccountTag, EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
-import { SourceBadge, SourceLegend, TypeBadge, sourceKey } from '../components/EventBadges.jsx';
+import { SourceBadge, SourceLegend, StageBadge, TypeBadge, sourceKey } from '../components/EventBadges.jsx';
 import WeekView from '../components/WeekView.jsx';
 import { formatTimeRange, getEventTiming, isSameDay } from '../lib/eventTime.js';
+import { EVENTS_CHANGED } from '../lib/scanStatus.js';
 import { API_BASE } from '../api.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -130,6 +131,8 @@ function Calendar() {
     }
 
     fetchEvents();
+    window.addEventListener(EVENTS_CHANGED, fetchEvents);
+    return () => window.removeEventListener(EVENTS_CHANGED, fetchEvents);
   }, []);
 
   function changeView(next) {
@@ -144,7 +147,9 @@ function Calendar() {
   const { scheduled, unscheduled } = useMemo(() => {
     const withDates = [];
     const withoutDates = [];
-    events.filter(isVisible).forEach((event) => {
+    // Rejected events (declined in review, or applications that were turned
+    // down) don't belong on the calendar.
+    events.filter((event) => event.status !== 'rejected' && isVisible(event)).forEach((event) => {
       const timing = getEventTiming(event);
       if (timing.date) {
         withDates.push({ ...event, timing });
@@ -362,6 +367,7 @@ function Calendar() {
                             <div className="day-event-badges">
                               <SourceBadge event={event} />
                               <TypeBadge event={event} />
+                              <StageBadge stage={event.stage} />
                               <PriorityTag priority={event.priority} />
                             </div>
                             <AccountTag
@@ -397,6 +403,7 @@ function Calendar() {
                       <div className="day-event-badges">
                         <SourceBadge event={event} />
                         <TypeBadge event={event} />
+                        <StageBadge stage={event.stage} />
                       </div>
                     </article>
                   ))}

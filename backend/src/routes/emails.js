@@ -1,6 +1,6 @@
 // ============================================================================
 // Compass - Email scanning routes
-// Triggers Gmail scanning and saves detected events to Supabase.
+// Triggers Gmail/Outlook scanning and saves detected events to Supabase.
 // ============================================================================
 
 
@@ -8,49 +8,23 @@ const express = require('express');
 const { scanGmailEmails } = require('../services/emailScanner');
 const { supabase } = require('../config/supabase');
 const { listConnectedEmails, updateConnectedEmailTokens } = require('../services/connectedEmails');
+const { saveScannedEmail } = require('../services/applicationTracker');
 
 
 const router = express.Router();
 
-
-/**
-* Event columns for the action-item checklist, exam/assignment topics, and
-* the email body. Action items are stored as { text, done } so the
-* dashboard can persist checkbox state.
-*/
-function emailDetailFields(item) {
- return {
-   action_items: (item.analysis.actionItems || []).map((text) => ({ text, done: false })),
-   topics: item.analysis.topicsOrContent || null,
-   email_body: item.email.body || item.email.snippet || null,
- };
-}
+// The login auto-scan looks at the last day only, capped so a busy inbox
+// can't turn one login into dozens of Claude calls.
+const AUTO_SCAN_QUERY = 'newer_than:1d';
+const AUTO_SCAN_MAX_RESULTS = 30;
 
 
 /**
-* A rejection closes out the application: it replaces whatever the thread's
-* event said before (even a priority-5 deadline) and leaves the review queue.
+* The signed-in user's Gmail accounts (with tokens). The session's own login
+* is included even if it's missing from connected_emails. Stored tokens are
+* only ever loaded for req.session.userId, never a userId from the query.
 */
-function rejectionFields(item) {
- return {
-   title: item.analysis.eventTitle || item.email.subject,
-   description: item.analysis.reasoning,
-   priority: 1,
-   status: 'rejected',
-   action_items: [],
-   topics: null,
-   email_body: item.email.body || item.email.snippet || null,
- };
-}
-
-
-/**
-* Gmail accounts to scan: every connected Gmail account for the signed-in
-* user, or just the session's own login for users who haven't signed in
-* since connected_emails existed. Stored tokens are only ever loaded for
-* req.session.userId, never a userId from the query string.
-*/
-async function gmailAccountsToScan(req) {
+async function gmailAccounts(req) {
  const accounts = req.session.userId
    ? await listConnectedEmails(req.session.userId, { provider: 'gmail', withTokens: true })
    : [];
@@ -65,141 +39,82 @@ async function gmailAccountsToScan(req) {
 
 
 /**
+* Saves each analyzed email that Claude flagged; returns counts.
+*/
+async function saveResults(userId, items, { source }) {
+ let saved = 0;
+ let updated = 0;
+ for (const item of items) {
+   const outcome = await saveScannedEmail(supabase, userId, item, { source, accountEmail: item.accountEmail });
+   if (outcome === 'inserted') saved += 1;
+   if (outcome === 'updated') updated += 1;
+ }
+ return { saved, updated };
+}
+
+
+/**
 * GET /emails/scan
-* Scans recent Gmail messages in every connected Gmail account, detects
-* scheduling events, tags each with its account, and saves them to Supabase
-* without duplicates.
+* Scans ONE Gmail account and saves its scheduling events.
+*
+* Query:
+*   account - which connected Gmail address to scan. Omitted = the primary
+*             account (the one the user signed in with); secondary accounts
+*             are only scanned when named here.
+*   window  - "1d" limits the scan to the last day (the login auto-scan).
+*   after   - with window=1d, epoch seconds of the previous auto-scan, so a
+*             second login the same day doesn't re-analyze the same emails.
 */
 router.get('/emails/scan', async (req, res) => {
- const accounts = await gmailAccountsToScan(req);
+ const accounts = await gmailAccounts(req);
  if (accounts.length === 0) {
    return res.status(401).json({ error: 'Not authenticated with Google' });
  }
 
+ const requested = typeof req.query.account === 'string' ? req.query.account.trim().toLowerCase() : '';
+ const primaryEmail = (req.session.googleEmail || accounts[0].email || '').toLowerCase();
+ const target = accounts.find((account) => (account.email || '').toLowerCase() === (requested || primaryEmail))
+   || (!requested ? accounts[0] : null);
+ if (!target) {
+   return res.status(404).json({ error: `${req.query.account} is not one of your connected Gmail accounts` });
+ }
+
+ const autoScan = req.query.window === '1d';
+ const after = Number.parseInt(req.query.after, 10);
+ const query = autoScan
+   ? [AUTO_SCAN_QUERY, Number.isFinite(after) && after > 0 ? `after:${after}` : ''].filter(Boolean).join(' ')
+   : undefined;
 
  try {
-   // Scan accounts one at a time (Claude rate limits); one account's expired
-   // or revoked token shouldn't stop the rest.
-   const events = [];
-   const failedAccounts = [];
-   for (const account of accounts) {
-     try {
-       const results = await scanGmailEmails(account.tokens, {
-         onTokens: account.id ? (tokens) => updateConnectedEmailTokens(account.id, tokens) : undefined,
-       });
-       for (const item of results) {
-         // Keep only emails Claude flagged as scheduling-related
-         if (item.analysis?.hasSchedulingInfo === true) {
-           events.push({ ...item, accountEmail: account.email });
-         }
-       }
-     } catch (accountError) {
-       console.error(`Gmail scan failed for ${account.email}:`, accountError.message);
-       failedAccounts.push(account.email);
-     }
-   }
-
-   if (failedAccounts.length === accounts.length) {
+   let results;
+   try {
+     results = await scanGmailEmails(target.tokens, {
+       onTokens: target.id ? (tokens) => updateConnectedEmailTokens(target.id, tokens) : undefined,
+       ...(autoScan ? { query, maxResults: AUTO_SCAN_MAX_RESULTS } : {}),
+     });
+   } catch (scanError) {
+     console.error(`Gmail scan failed for ${target.email}:`, scanError.message);
      return res.status(502).json({
        success: false,
-       message: `Could not scan ${failedAccounts.join(', ')}. Try reconnecting the account.`,
+       message: `Could not scan ${target.email}. Try reconnecting the account.`,
      });
    }
 
+   // Keep only emails Claude flagged as scheduling-related
+   const events = results
+     .filter((item) => item.analysis?.hasSchedulingInfo === true)
+     .map((item) => ({ ...item, accountEmail: target.email }));
 
-   // Save detected events to Supabase if user is logged in
-   let saved = 0;
-   if (req.session.userId) {
-     for (const item of events) {
-       const newPriority = item.analysis.priority || 3;
-       const threadId = item.email.threadId;
-
-
-       // Deduplicate by Gmail thread: one event row per conversation thread
-       if (threadId) {
-         const { data: existing, error: lookupError } = await supabase
-           .from('events')
-           .select('id, priority, title, description, email_count')
-           .eq('user_id', req.session.userId)
-           .eq('thread_id', threadId)
-           .maybeSingle();
-
-
-         if (lookupError) {
-           console.error('Supabase event lookup error:', lookupError.message);
-           continue;
-         }
-
-
-         if (existing) {
-           // Thread already tracked — bump count; refresh title/description if higher priority
-           // Also backfills the account on rows saved before events.source_email existed
-           const updatePayload = {
-             email_count: (existing.email_count || 1) + 1,
-             source_email: item.accountEmail,
-           };
-
-
-           if (item.analysis.isRejection) {
-             Object.assign(updatePayload, rejectionFields(item));
-           } else if (newPriority > (existing.priority || 0)) {
-             updatePayload.title =
-               item.analysis.eventTitle || item.email.subject;
-             updatePayload.description = item.analysis.reasoning;
-             updatePayload.priority = newPriority;
-             Object.assign(updatePayload, emailDetailFields(item));
-           }
-
-
-           const { error: updateError } = await supabase
-             .from('events')
-             .update(updatePayload)
-             .eq('id', existing.id);
-
-
-           if (updateError) {
-             console.error('Supabase event update error:', updateError.message);
-           }
-           continue;
-         }
-       }
-
-
-       // New thread (or no threadId) — insert a fresh event row
-       const { error } = await supabase.from('events').insert({
-        user_id: req.session.userId,
-        thread_id: threadId || null,
-        email_count: 1,
-        title: item.analysis.eventTitle || item.email.subject,
-        description: item.analysis.reasoning,
-        start_time: null,
-        raw_date: item.analysis.eventDate || null,
-        event_time: item.analysis.eventTime || null,
-        location: item.analysis.location || null,
-        source: 'gmail',
-        source_email: item.accountEmail,
-        scheduling_type: item.analysis.schedulingType || 'other',
-        priority: newPriority,
-        status: item.analysis.isRejection ? 'rejected' : 'pending',
-        ...emailDetailFields(item),
-      });
-
-
-       if (error) {
-         console.error('Supabase event insert error:', error.message);
-       } else {
-         saved++;
-       }
-     }
-   }
-
+   const counts = req.session.userId
+     ? await saveResults(req.session.userId, events, { source: 'gmail' })
+     : { saved: 0, updated: 0 };
 
    res.json({
      success: true,
+     account: target.email,
+     scannedMessages: results.length,
      total: events.length,
-     saved,
-     accountsScanned: accounts.length - failedAccounts.length,
-     failedAccounts,
+     ...counts,
      events,
    });
  } catch (error) {
@@ -216,77 +131,29 @@ router.get('/emails/scan', async (req, res) => {
  * Scans recent Outlook messages and saves scheduling events to Supabase.
  */
 router.get('/emails/scan/outlook', async (req, res) => {
-    const userId = req.session.userId || req.query.userId;
+  const userId = req.session.userId || req.query.userId;
 
-    if (!req.session.microsoftTokens) {
-      return res.status(401).json({ error: 'Not authenticated with Microsoft' });
-    }
+  if (!req.session.microsoftTokens) {
+    return res.status(401).json({ error: 'Not authenticated with Microsoft' });
+  }
 
-    try {
-      const { scanOutlookEmails } = require('../services/outlookScanner');
-      const results = await scanOutlookEmails(req.session.microsoftTokens);
+  try {
+    const { scanOutlookEmails } = require('../services/outlookScanner');
+    const results = await scanOutlookEmails(req.session.microsoftTokens);
 
-      const events = results.filter(
-        (item) => item.analysis?.hasSchedulingInfo === true
-      );
+    const events = results
+      .filter((item) => item.analysis?.hasSchedulingInfo === true)
+      .map((item) => ({ ...item, accountEmail: req.session.microsoftEmail || null }));
 
-      let saved = 0;
-      if (userId) {
-        for (const item of events) {
-          const newPriority = item.analysis.priority || 3;
-          const threadId = item.email.threadId;
+    const counts = userId
+      ? await saveResults(userId, events, { source: 'outlook' })
+      : { saved: 0, updated: 0 };
 
-          if (threadId) {
-            const { data: existing } = await supabase
-              .from('events')
-              .select('id, priority, email_count')
-              .eq('user_id', userId)
-              .eq('thread_id', threadId)
-              .maybeSingle();
+    res.json({ success: true, total: events.length, ...counts, events });
+  } catch (error) {
+    console.error('Outlook scan error:', error.message);
+    res.status(500).json({ success: false, message: 'Failed to scan Outlook emails' });
+  }
+});
 
-            if (existing) {
-              await supabase
-                .from('events')
-                .update({
-                  email_count: (existing.email_count || 1) + 1,
-                  ...(item.analysis.isRejection ? rejectionFields(item) : {}),
-                })
-                .eq('id', existing.id);
-              continue;
-            }
-          }
-
-          const { error } = await supabase.from('events').insert({
-            user_id: userId,
-            thread_id: threadId || null,
-            email_count: 1,
-            title: item.analysis.eventTitle || item.email.subject,
-            description: item.analysis.reasoning,
-            start_time: null,
-            raw_date: item.analysis.eventDate || null,
-            event_time: item.analysis.eventTime || null,
-            location: item.analysis.location || null,
-            source: 'outlook',
-            source_email: req.session.microsoftEmail || null,
-            scheduling_type: item.analysis.schedulingType || 'other',
-            priority: newPriority,
-            status: item.analysis.isRejection ? 'rejected' : 'pending',
-            ...emailDetailFields(item),
-          });
-  
-          if (error) {
-            console.error('Supabase outlook insert error:', error.message);
-          } else {
-            saved++;
-          }
-        }
-      }
-  
-      res.json({ success: true, total: events.length, saved, events });
-    } catch (error) {
-      console.error('Outlook scan error:', error.message);
-      res.status(500).json({ success: false, message: 'Failed to scan Outlook emails' });
-    }
-  });
-  
 module.exports = router;

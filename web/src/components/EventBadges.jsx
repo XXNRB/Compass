@@ -69,6 +69,23 @@ export function TypeBadge({ event, iconOnly = false }) {
   );
 }
 
+const STAGES = {
+  applied: 'Applied',
+  interviewing: 'Interviewing',
+  offer: 'Offer',
+  rejected: 'Rejected',
+};
+
+/** Where a job/internship application stands (events.stage). */
+export function StageBadge({ stage }) {
+  if (!STAGES[stage]) return null;
+  return (
+    <span className="stage-badge" data-stage={stage}>
+      {STAGES[stage]}
+    </span>
+  );
+}
+
 /** Color key for the calendar header. */
 export function SourceLegend() {
   return (

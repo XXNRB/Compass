@@ -3,6 +3,8 @@ import axios from 'axios';
 import AppHeader from '../components/AppHeader.jsx';
 import Icon from '../components/Icon.jsx';
 import { PriorityTag } from '../components/Priority.jsx';
+import { StageBadge } from '../components/EventBadges.jsx';
+import { EVENTS_CHANGED, runAutoScan } from '../lib/scanStatus.js';
 import { AccountTag, EmailFilter, useEmailFilter } from '../components/EmailFilter.jsx';
 import { API_BASE, authUrl } from '../api.js';
 
@@ -118,8 +120,21 @@ function Dashboard() {
  const [dedupeLoading, setDedupeLoading] = useState(false);
  const [dedupeMessage, setDedupeMessage] = useState(null);
  const [linkMessage, setLinkMessage] = useState(null);
+ const [scanAccount, setScanAccount] = useState('');
  const emailFilter = useEmailFilter(pendingEvents);
  const visibleEvents = pendingEvents.filter(emailFilter.isVisible);
+
+ // Gmail accounts for the scan dropdown, primary (the sign-in account) first.
+ const primaryEmail = emailFilter.primary || localStorage.getItem('compassUserEmail') || '';
+ const gmailAccounts = [
+   ...new Set([
+     primaryEmail,
+     ...emailFilter.connectedAccounts
+       .filter((account) => account.provider === 'gmail')
+       .map((account) => account.email),
+   ].filter((email) => email && email.includes('@'))),
+ ];
+ const selectedScanAccount = scanAccount || gmailAccounts[0] || '';
 
  // Preview first, then confirm: removal is permanent.
  async function handleRemoveDuplicates() {
@@ -321,7 +336,16 @@ function Dashboard() {
    }
    fetchPendingEvents();
    fetchCanvasStatus();
+   // Fresh login: scan the primary inbox's last day in the background.
+   if (emailFromUrl) runAutoScan();
    fetchPreferences();
+ }, []);
+
+ // The background auto-scan announces new or updated events.
+ useEffect(() => {
+   const refresh = () => fetchPendingEvents();
+   window.addEventListener(EVENTS_CHANGED, refresh);
+   return () => window.removeEventListener(EVENTS_CHANGED, refresh);
  }, []);
 
  async function handleApprove(id) {
@@ -404,6 +428,8 @@ function Dashboard() {
  }
 
 
+ // Scans only the account picked in the dropdown; secondary accounts are
+ // never scanned unless chosen here.
  async function handleScan() {
    setLoading(true);
    setError(null);
@@ -413,14 +439,12 @@ function Dashboard() {
 
    try {
      const { data } = await axios.get(`${API_BASE}/emails/scan`, {
+       params: selectedScanAccount ? { account: selectedScanAccount } : {},
        withCredentials: true,
      });
 
 
-     setScanMeta({ total: data.total, saved: data.saved });
-     if (data.failedAccounts?.length) {
-       setError(`Could not scan ${data.failedAccounts.join(', ')}. Try reconnecting ${data.failedAccounts.length > 1 ? 'those accounts' : 'that account'}.`);
-     }
+     setScanMeta({ total: data.total, saved: data.saved, updated: data.updated, account: data.account });
      await fetchPendingEvents();
    } catch (err) {
      const { message, needsConnect } = describeScanError(err, 'Gmail');
@@ -539,15 +563,32 @@ function Dashboard() {
            </p>
          </div>
          <div className="toolbar">
-           <button
-             type="button"
-             className="btn btn-primary"
-             onClick={handleScan}
-             disabled={loading}
-           >
-             {loading && <Spinner />}
-             {loading ? 'Scanning' : 'Scan Gmail'}
-           </button>
+           <div className="scan-control">
+             <button
+               type="button"
+               className="btn btn-primary"
+               onClick={handleScan}
+               disabled={loading}
+             >
+               {loading && <Spinner />}
+               {loading ? 'Scanning' : 'Scan Emails'}
+             </button>
+             {gmailAccounts.length > 1 && (
+               <select
+                 className="scan-account-select"
+                 value={selectedScanAccount}
+                 onChange={(e) => setScanAccount(e.target.value)}
+                 disabled={loading}
+                 aria-label="Gmail account to scan"
+               >
+                 {gmailAccounts.map((email) => (
+                   <option key={email} value={email}>
+                     {email}{email === primaryEmail ? ' (primary)' : ''}
+                   </option>
+                 ))}
+               </select>
+             )}
+           </div>
            <button
              type="button"
              className="btn btn-outline"
@@ -595,8 +636,10 @@ function Dashboard() {
        {dedupeMessage && <Notice tone="success">{dedupeMessage}</Notice>}
        {scanMeta && !loading && (
          <Notice tone="success">
+           {scanMeta.account && `${scanMeta.account}: `}
            Found {scanMeta.total} event{scanMeta.total !== 1 ? 's' : ''}
-           {typeof scanMeta.saved === 'number' && ` · ${scanMeta.saved} saved to database`}
+           {typeof scanMeta.saved === 'number' && ` · ${scanMeta.saved} new`}
+           {scanMeta.updated ? ` · ${scanMeta.updated} existing updated` : ''}
          </Notice>
        )}
 
@@ -648,6 +691,7 @@ function Dashboard() {
                      <div className="event-card-header">
                        <h3 className="event-title">{event.title || 'Untitled event'}</h3>
                        <div className="event-tags">
+                         <StageBadge stage={event.stage} />
                          <PriorityTag priority={event.priority} />
                          <span className="tag">{event.scheduling_type || 'other'}</span>
                        </div>

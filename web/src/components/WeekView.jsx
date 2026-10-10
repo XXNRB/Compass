@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Icon from './Icon.jsx';
-import { SourceBadge, TypeBadge, sourceKey } from './EventBadges.jsx';
+import { SourceBadge, StageBadge, TypeBadge, sourceKey } from './EventBadges.jsx';
 import { MINUTES_PER_DAY, formatTimeRange, isSameDay } from '../lib/eventTime.js';
 
 const HOUR_PX = 64;
@@ -113,7 +113,12 @@ function EventBlock({ item, onSelect }) {
               <span>{event.location}</span>
             </span>
           )}
-          {height >= 84 && <SourceBadge event={event} short />}
+          {height >= 84 && (
+            <span className="week-event-badges">
+              <SourceBadge event={event} short />
+              <StageBadge stage={event.stage} />
+            </span>
+          )}
         </>
       )}
     </button>

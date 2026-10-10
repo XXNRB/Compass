@@ -47,6 +47,7 @@ function hashColor(email) {
  */
 export function useEmailFilter(events = []) {
   const [connected, setConnected] = useState([]);
+  const [primary, setPrimary] = useState(null);
   const [hidden, setHidden] = useState(readHidden);
 
   const fetchAccounts = useCallback(async () => {
@@ -56,6 +57,7 @@ export function useEmailFilter(events = []) {
         withCredentials: true,
       });
       setConnected(data.accounts || []);
+      setPrimary(data.primary || null);
     } catch {
       // Non-fatal: fall back to the addresses found on events.
     }
@@ -118,6 +120,7 @@ export function useEmailFilter(events = []) {
   return {
     accounts,
     connectedAccounts: connected,
+    primary,
     hidden,
     toggle,
     showAll,
