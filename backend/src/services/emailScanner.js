@@ -32,7 +32,17 @@ const CLAUDE_SYSTEM_PROMPT = `You are a scheduling assistant for a college stude
 - Apartment tours or lease signing appointments
 
 
-DEADLINES ARE THE MOST IMPORTANT THING YOU DETECT.
+REJECTIONS OVERRIDE EVERYTHING ELSE.
+First decide whether the email tells the student they were turned down for a job, internship, program, scholarship, or housing application. Typical wording: "we have decided to move forward with other candidates", "you were not selected", "we will not be moving forward with your application", "the position has been filled", "we regret to inform you", often introduced by "Unfortunately". Judge the meaning, not single words: "unfortunately the info session moved to Friday" is NOT a rejection, and a conditional like "if you are not selected, you will be notified" is NOT a rejection.
+If it IS a rejection:
+- Set isRejection to true and hasSchedulingInfo to true
+- Set priority to 1 (this overrides the deadline rule and every priority rule below)
+- Set hasSpecificDeadline to false, actionItems to [] (no "monitor application" or follow-up items), topicsOrContent to null, eventDate and eventTime to null
+- Set eventTitle to the role and organization (e.g. "Roblox Software Engineering Intern application")
+- Set reasoning to exactly "Application rejected"
+
+
+DEADLINES ARE THE MOST IMPORTANT THING YOU DETECT (for anything that is not a rejection).
 Read the ENTIRE email body carefully for deadlines — they are often buried in the middle or end of the email, not the subject line.
 If the email mentions ANY specific due date or deadline the student must meet (e.g. "due Friday", "submit by March 3", "complete within 48 hours", "respond by end of day", "expires on June 1"):
 - Set hasSpecificDeadline to true
@@ -115,7 +125,8 @@ CATEGORIES TO ALWAYS FLAG (hasSchedulingInfo = true):
 
 
 Return ONLY a valid JSON object with these fields:
-- hasSchedulingInfo (boolean): true if ANY scheduling info is present
+- isRejection (boolean): true if the email rejects the student's application (see REJECTIONS above)
+- hasSchedulingInfo (boolean): true if ANY scheduling info is present, or if isRejection is true
 - eventTitle (string or null): name of the event or meeting
 - eventDate (string or null): the MOST SPECIFIC date mentioned. Prefer formats like "June 1, 2026" or "2026-06-01" over vague ranges like "Summer 2026". If there is a deadline, use the deadline date. Otherwise, if multiple dates exist, pick the earliest upcoming one. If only a vague season is mentioned with no specific date, return null.
 - eventTime (string or null): specific time if mentioned, otherwise null
@@ -128,7 +139,30 @@ Return ONLY a valid JSON object with these fields:
 - reasoning (string): brief explanation of priority assigned
 
 
-If no scheduling info found return hasSchedulingInfo: false, hasSpecificDeadline: false, actionItems: [], and null for other fields.`;
+If no scheduling info found return isRejection: false, hasSchedulingInfo: false, hasSpecificDeadline: false, actionItems: [], and null for other fields.`;
+
+// Unambiguous rejection wording. Checked in code as well as in the prompt so a
+// rejection is never saved as a priority-5 "deadline" if the model misses it.
+// Bare "unfortunately" / "not selected" are left to the model: alone they also
+// appear in rescheduling notices and conditional sentences.
+const REJECTION_PATTERNS = [
+  /(?:move|moving) forward with other (?:candidates|applicants)/i,
+  /(?:decided|chosen|chose) to (?:proceed|pursue|go) (?:forward )?with other (?:candidates|applicants)/i,
+  /(?:will|won't|will not|are not|aren't) (?:be )?(?:moving|move) forward with your (?:application|candidacy)/i,
+  /decided not to (?:move forward|proceed) with your/i,
+  /you (?:have|were) not (?:been )?selected/i,
+  /we regret to inform you/i,
+  /(?:position|role) has (?:already )?been filled/i,
+  /no longer (?:being )?(?:under consideration|considered)/i,
+  /unable to offer you (?:a|the) (?:position|role|internship|job)/i,
+];
+
+const REJECTION_NOTE = 'Application rejected';
+
+function looksLikeRejection(email) {
+  const text = [email?.subject, email?.body || email?.snippet].filter(Boolean).join('\n');
+  return REJECTION_PATTERNS.some((pattern) => pattern.test(text));
+}
 /**
 * Builds an OAuth2 client from stored Google tokens.
 */
@@ -232,16 +266,34 @@ function parseGmailMessage(message) {
 
 /**
 * Normalizes Claude's output: guarantees an actionItems string array and
-* enforces the deadline rule (any specific deadline is priority 5) even if
-* the model forgot to apply it.
+* enforces the rules even if the model forgot to apply them. A rejection
+* (flagged by the model or matched by REJECTION_PATTERNS) is priority 1 with
+* no action items; otherwise any specific deadline is priority 5.
 */
-function normalizeAnalysis(result) {
+function normalizeAnalysis(result, email) {
+ if (result.isRejection === true || looksLikeRejection(email)) {
+   return {
+     ...result,
+     isRejection: true,
+     hasSchedulingInfo: true,
+     hasSpecificDeadline: false,
+     priority: 1,
+     actionItems: [],
+     topicsOrContent: null,
+     eventTitle: result.eventTitle || email?.subject || null,
+     eventDate: null,
+     eventTime: null,
+     reasoning: REJECTION_NOTE,
+   };
+ }
+
  const actionItems = Array.isArray(result.actionItems)
    ? result.actionItems.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
    : [];
 
  return {
    ...result,
+   isRejection: false,
    actionItems,
    topicsOrContent: result.topicsOrContent || null,
    priority: result.hasSpecificDeadline ? 5 : result.priority,
@@ -302,7 +354,7 @@ async function analyzeEmailWithClaude(email) {
    }
 
 
-   const result = normalizeAnalysis(parseClaudeJson(textBlock.text));
+   const result = normalizeAnalysis(parseClaudeJson(textBlock.text), email);
    console.log('Claude analyzed:', email.subject, '→', result.hasSchedulingInfo, result.eventTitle || '');
    return result;
  } catch (error) {

@@ -7,11 +7,24 @@ import { AccountTag, EmailFilter, useEmailFilter } from '../components/EmailFilt
 import { API_BASE, authUrl } from '../api.js';
 
 
-// /u/<address>/ opens the right mailbox when several Google accounts are
-// signed in; /u/0/ (the first account) is the fallback for untagged events.
-function gmailThreadUrl(event) {
- const account = event.source_email ? encodeURIComponent(event.source_email) : '0';
- return `https://mail.google.com/mail/u/${account}/#inbox/${encodeURIComponent(event.thread_id)}`;
+// Gmail's /u/<n>/ is the account's position in the browser's Google sign-in
+// list (0 = first signed in), not something the API can tell us, so it's
+// mapped by address here. Unlisted accounts default to the first one.
+const GMAIL_ACCOUNT_INDEX = {
+ 'kofidadzieyeboah@gmail.com': 0,
+ 'kofidy15@gmail.com': 1,
+};
+
+// #all/ finds the thread wherever it is (inbox, archived, labeled); #inbox/
+// 404s once a thread leaves the inbox. Without a thread id, search Gmail for
+// the event title instead.
+function gmailEmailUrl(event) {
+ const index = GMAIL_ACCOUNT_INDEX[event.source_email] ?? 0;
+ const base = `https://mail.google.com/mail/u/${index}/`;
+ if (event.thread_id) {
+   return `${base}#all/${event.thread_id}`;
+ }
+ return `${base}#search/${encodeURIComponent(event.title || '')}`;
 }
 
 
@@ -701,10 +714,10 @@ function Dashboard() {
                        </div>
                      )}
 
-                     {event.source === 'gmail' && event.thread_id && (
+                     {event.source === 'gmail' && (event.thread_id || event.title) && (
                        <a
                          className="event-link"
-                         href={gmailThreadUrl(event)}
+                         href={gmailEmailUrl(event)}
                          target="_blank"
                          rel="noopener noreferrer"
                        >

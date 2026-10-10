@@ -28,6 +28,23 @@ function emailDetailFields(item) {
 
 
 /**
+* A rejection closes out the application: it replaces whatever the thread's
+* event said before (even a priority-5 deadline) and leaves the review queue.
+*/
+function rejectionFields(item) {
+ return {
+   title: item.analysis.eventTitle || item.email.subject,
+   description: item.analysis.reasoning,
+   priority: 1,
+   status: 'rejected',
+   action_items: [],
+   topics: null,
+   email_body: item.email.body || item.email.snippet || null,
+ };
+}
+
+
+/**
 * Gmail accounts to scan: every connected Gmail account for the signed-in
 * user, or just the session's own login for users who haven't signed in
 * since connected_emails existed. Stored tokens are only ever loaded for
@@ -123,7 +140,9 @@ router.get('/emails/scan', async (req, res) => {
            };
 
 
-           if (newPriority > (existing.priority || 0)) {
+           if (item.analysis.isRejection) {
+             Object.assign(updatePayload, rejectionFields(item));
+           } else if (newPriority > (existing.priority || 0)) {
              updatePayload.title =
                item.analysis.eventTitle || item.email.subject;
              updatePayload.description = item.analysis.reasoning;
@@ -161,7 +180,7 @@ router.get('/emails/scan', async (req, res) => {
         source_email: item.accountEmail,
         scheduling_type: item.analysis.schedulingType || 'other',
         priority: newPriority,
-        status: 'pending',
+        status: item.analysis.isRejection ? 'rejected' : 'pending',
         ...emailDetailFields(item),
       });
 
@@ -228,7 +247,10 @@ router.get('/emails/scan/outlook', async (req, res) => {
             if (existing) {
               await supabase
                 .from('events')
-                .update({ email_count: (existing.email_count || 1) + 1 })
+                .update({
+                  email_count: (existing.email_count || 1) + 1,
+                  ...(item.analysis.isRejection ? rejectionFields(item) : {}),
+                })
                 .eq('id', existing.id);
               continue;
             }
@@ -248,7 +270,7 @@ router.get('/emails/scan/outlook', async (req, res) => {
             source_email: req.session.microsoftEmail || null,
             scheduling_type: item.analysis.schedulingType || 'other',
             priority: newPriority,
-            status: 'pending',
+            status: item.analysis.isRejection ? 'rejected' : 'pending',
             ...emailDetailFields(item),
           });
   
