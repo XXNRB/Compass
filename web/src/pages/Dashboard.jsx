@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import AppHeader from '../components/AppHeader.jsx';
 import Icon from '../components/Icon.jsx';
+import CanvasCard from '../components/CanvasCard.jsx';
+import { Field, Notice, Spinner } from '../components/FormBits.jsx';
 import { PriorityTag } from '../components/Priority.jsx';
 import { StageBadge } from '../components/EventBadges.jsx';
 import { EVENTS_CHANGED, runAutoScan } from '../lib/scanStatus.js';
@@ -58,31 +60,6 @@ function describeScanError(err, label) {
 }
 
 
-function Spinner() {
- return <span className="spinner" aria-hidden="true" />;
-}
-
-
-function Field({ label, children }) {
- return (
-   <label className="field">
-     <span className="field-label">{label}</span>
-     {children}
-   </label>
- );
-}
-
-
-function Notice({ tone, children, inline = false }) {
- return (
-   <div className={`notice notice--${tone}${inline ? ' notice--inline' : ''}`} role={tone === 'error' ? 'alert' : 'status'}>
-     <Icon name={tone === 'error' ? 'alert' : 'check'} />
-     <span>{children}</span>
-   </div>
- );
-}
-
-
 function Dashboard() {
  const [userEmail, setUserEmail] = useState('');
  const [loading, setLoading] = useState(false);
@@ -101,16 +78,6 @@ function Dashboard() {
  const [pendingEvents, setPendingEvents] = useState([]);
  const [pendingLoading, setPendingLoading] = useState(true);
  const [actionPendingId, setActionPendingId] = useState(null);
- const [canvasUrl, setCanvasUrl] = useState('');
- const [canvasToken, setCanvasToken] = useState('');
- const [canvasConnected, setCanvasConnected] = useState(false);
- const [canvasConnectedUrl, setCanvasConnectedUrl] = useState(null);
- const [showCanvasForm, setShowCanvasForm] = useState(false);
- const [canvasConnectLoading, setCanvasConnectLoading] = useState(false);
- const [canvasConnectError, setCanvasConnectError] = useState(null);
- const [canvasSyncLoading, setCanvasSyncLoading] = useState(false);
- const [canvasSyncMessage, setCanvasSyncMessage] = useState(null);
- const [canvasSyncError, setCanvasSyncError] = useState(null);
  const [homeAddress, setHomeAddress] = useState('');
  const [travelMode, setTravelMode] = useState('driving');
  const [prefsSaveLoading, setPrefsSaveLoading] = useState(false);
@@ -222,73 +189,6 @@ function Dashboard() {
    return `${hour12}:${minutes} ${suffix}`;
  }
 
- async function fetchCanvasStatus() {
-   try {
-     const userId = localStorage.getItem('compassUserId') || '';
-     const { data } = await axios.get(`${API_BASE}/canvas/status?userId=${userId}`, {
-       withCredentials: true,
-     });
-     setCanvasConnected(!!data.connected);
-     setCanvasConnectedUrl(data.canvasUrl || null);
-   } catch (err) {
-     // Non-fatal: leave the connect form available.
-   }
- }
-
- async function handleCanvasConnect(event) {
-   event.preventDefault();
-   setCanvasConnectLoading(true);
-   setCanvasConnectError(null);
-
-   try {
-     const userId = localStorage.getItem('compassUserId') || '';
-     const { data } = await axios.post(
-       `${API_BASE}/canvas/connect`,
-       { canvasUrl, canvasToken, userId },
-       { withCredentials: true },
-     );
-     setCanvasConnected(true);
-     setCanvasConnectedUrl(data.canvasUrl);
-     setShowCanvasForm(false);
-     setCanvasToken('');
-   } catch (err) {
-     const message =
-       err.response?.data?.error ||
-       err.response?.data?.message ||
-       'Could not connect to Canvas. Check your URL and API token.';
-     setCanvasConnectError(message);
-   } finally {
-     setCanvasConnectLoading(false);
-   }
- }
-
- async function handleCanvasSync() {
-   setCanvasSyncLoading(true);
-   setCanvasSyncError(null);
-   setCanvasSyncMessage(null);
-
-   try {
-     const userId = localStorage.getItem('compassUserId') || '';
-     const { data } = await axios.post(
-       `${API_BASE}/canvas/sync`,
-       { userId },
-       { withCredentials: true },
-     );
-     setCanvasSyncMessage(
-       `Found ${data.assignmentsFound} assignment${data.assignmentsFound !== 1 ? 's' : ''} across ${data.coursesFound} course${data.coursesFound !== 1 ? 's' : ''} — ${data.imported} new`,
-     );
-     await fetchPendingEvents();
-   } catch (err) {
-     const message =
-       err.response?.data?.error ||
-       err.response?.data?.message ||
-       'Failed to sync Canvas assignments.';
-     setCanvasSyncError(message);
-   } finally {
-     setCanvasSyncLoading(false);
-   }
- }
-
  async function fetchPendingEvents() {
    try {
      const userId = localStorage.getItem('compassUserId') || '';
@@ -335,7 +235,6 @@ function Dashboard() {
      window.history.replaceState({}, '', '/dashboard');
    }
    fetchPendingEvents();
-   fetchCanvasStatus();
    // Fresh login: scan the primary inbox's last day in the background.
    if (emailFromUrl) runAutoScan();
    fetchPreferences();
@@ -879,88 +778,7 @@ function Dashboard() {
              )}
            </section>
 
-           <section className="card">
-             <h2 className="card-title">Canvas</h2>
-             <p className="card-desc">
-               Pull assignment due dates from your school&apos;s Canvas automatically.
-             </p>
-
-             {canvasConnected && !showCanvasForm ? (
-               <div>
-                 <p className="connected-row">
-                   <span className="status-dot" aria-hidden="true" />
-                   <span>Connected to <strong>{canvasConnectedUrl}</strong></span>
-                 </p>
-                 <div className="form-actions">
-                   <button
-                     type="button"
-                     className="btn btn-primary"
-                     onClick={handleCanvasSync}
-                     disabled={canvasSyncLoading}
-                   >
-                     {canvasSyncLoading && <Spinner />}
-                     {canvasSyncLoading ? 'Syncing' : 'Sync assignments'}
-                   </button>
-                   <button
-                     type="button"
-                     className="btn btn-outline"
-                     onClick={() => setShowCanvasForm(true)}
-                   >
-                     Change token
-                   </button>
-                 </div>
-
-                 {canvasSyncError && <Notice tone="error" inline>{canvasSyncError}</Notice>}
-                 {canvasSyncMessage && !canvasSyncLoading && (
-                   <Notice tone="success" inline>{canvasSyncMessage}</Notice>
-                 )}
-               </div>
-             ) : (
-               <form onSubmit={handleCanvasConnect} className="form">
-                 <Field label="School Canvas URL">
-                   <input
-                     type="text"
-                     className="input"
-                     value={canvasUrl}
-                     onChange={(e) => setCanvasUrl(e.target.value)}
-                     placeholder="yourschool.instructure.com"
-                   />
-                 </Field>
-
-                 <Field label="API token">
-                   <input
-                     type="password"
-                     className="input"
-                     value={canvasToken}
-                     onChange={(e) => setCanvasToken(e.target.value)}
-                     placeholder="Paste your personal access token"
-                   />
-                 </Field>
-
-                 <div className="form-actions">
-                   <button
-                     type="submit"
-                     className="btn btn-outline"
-                     disabled={canvasConnectLoading}
-                   >
-                     {canvasConnectLoading && <Spinner />}
-                     {canvasConnectLoading ? 'Connecting' : 'Connect Canvas'}
-                   </button>
-                   {canvasConnected && (
-                     <button
-                       type="button"
-                       className="btn btn-ghost"
-                       onClick={() => setShowCanvasForm(false)}
-                     >
-                       Cancel
-                     </button>
-                   )}
-                 </div>
-               </form>
-             )}
-
-             {canvasConnectError && <Notice tone="error" inline>{canvasConnectError}</Notice>}
-           </section>
+           <CanvasCard onSynced={fetchPendingEvents} />
 
            <section className="card">
              <h2 className="card-title">Travel preferences</h2>

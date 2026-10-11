@@ -5,6 +5,8 @@
 // ============================================================================
 
 const https = require('https');
+const dns = require('dns').promises;
+const net = require('net');
 
 /**
  * Normalizes a user-entered Canvas URL into a bare origin, e.g.
@@ -17,6 +19,49 @@ function normalizeCanvasUrl(rawUrl) {
   const trimmed = (rawUrl || '').trim().replace(/\/+$/, '');
   const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   return withProtocol;
+}
+
+// Private, loopback, link-local and carrier-NAT ranges. The server makes
+// requests to whatever Canvas URL a user enters, so it must not be pointed at
+// internal services.
+function isPrivateAddress(address) {
+  if (net.isIPv6(address)) {
+    const lower = address.toLowerCase();
+    if (lower.startsWith('::ffff:')) return isPrivateAddress(lower.slice(7));
+    return lower === '::1' || lower === '::' || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower);
+  }
+  const [a, b] = address.split('.').map(Number);
+  return a === 10 || a === 127 || a === 0
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 100 && b >= 64 && b <= 127);
+}
+
+/**
+ * Throws unless the URL is https on a public hostname. Used before any
+ * request that carries a user's Canvas credentials.
+ *
+ * @param {string} baseUrl
+ */
+async function assertPublicCanvasUrl(baseUrl) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error('Enter your Canvas address, e.g. yourschool.instructure.com');
+  }
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== 'https:') throw new Error('Canvas address must use https');
+  if (net.isIP(host) || !host.includes('.') || host === 'localhost'
+    || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.localhost')) {
+    throw new Error("Enter your school's Canvas web address");
+  }
+  const addresses = await dns.lookup(host, { all: true }).catch(() => []);
+  if (!addresses.length) throw new Error(`Could not find ${host}`);
+  if (addresses.some(({ address }) => isPrivateAddress(address))) {
+    throw new Error("Enter your school's Canvas web address");
+  }
 }
 
 /**
@@ -36,18 +81,33 @@ function parseNextLink(linkHeader) {
 }
 
 /**
+ * Request headers for either kind of Canvas credential: an API access token
+ * (a string) or { sessionCookie } copied from the user's browser.
+ */
+function authHeaders(auth) {
+  if (typeof auth === 'string') return { Authorization: `Bearer ${auth}` };
+  if (auth?.sessionCookie) return { Cookie: `canvas_session=${auth.sessionCookie}` };
+  throw new Error('Missing Canvas credentials');
+}
+
+/**
  * Performs a single authenticated GET against the Canvas API.
+ * Requests only ever go to baseUrl's origin, including pagination links, so
+ * credentials can't be sent anywhere else. Rejected errors carry statusCode.
  *
  * @param {string} baseUrl - Canvas origin, e.g. "https://school.instructure.com"
  * @param {string} pathOrUrl - Relative API path or an absolute pagination URL
- * @param {string} token - Canvas API access token
+ * @param {string|{ sessionCookie: string }} auth - API token, or a session cookie
  * @returns {Promise<{ data: unknown, nextUrl: string|null }>}
  */
-function canvasGet(baseUrl, pathOrUrl, token) {
+function canvasGet(baseUrl, pathOrUrl, auth) {
   return new Promise((resolve, reject) => {
     let url;
     try {
       url = new URL(pathOrUrl, baseUrl);
+      if (url.origin !== new URL(baseUrl).origin) {
+        throw new Error('request left the Canvas site');
+      }
     } catch (err) {
       reject(new Error(`Invalid Canvas URL: ${err.message}`));
       return;
@@ -57,7 +117,7 @@ function canvasGet(baseUrl, pathOrUrl, token) {
       url,
       {
         headers: {
-          Authorization: `Bearer ${token}`,
+          ...authHeaders(auth),
           Accept: 'application/json',
         },
       },
@@ -70,7 +130,9 @@ function canvasGet(baseUrl, pathOrUrl, token) {
 
         response.on('end', () => {
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(`Canvas API error (${response.statusCode}): ${body.slice(0, 300)}`));
+            const error = new Error(`Canvas API error (${response.statusCode}): ${body.slice(0, 300)}`);
+            error.statusCode = response.statusCode;
+            reject(error);
             return;
           }
 
@@ -96,15 +158,15 @@ function canvasGet(baseUrl, pathOrUrl, token) {
  *
  * @param {string} baseUrl
  * @param {string} initialPath
- * @param {string} token
+ * @param {string|{ sessionCookie: string }} auth
  * @returns {Promise<Array<object>>}
  */
-async function fetchAllPages(baseUrl, initialPath, token) {
+async function fetchAllPages(baseUrl, initialPath, auth) {
   let results = [];
   let next = initialPath;
 
   while (next) {
-    const { data, nextUrl } = await canvasGet(baseUrl, next, token);
+    const { data, nextUrl } = await canvasGet(baseUrl, next, auth);
     results = results.concat(Array.isArray(data) ? data : []);
     next = nextUrl;
   }
@@ -116,23 +178,23 @@ async function fetchAllPages(baseUrl, initialPath, token) {
  * Fetches the user's active courses.
  *
  * @param {string} baseUrl
- * @param {string} token
+ * @param {string|{ sessionCookie: string }} auth
  * @returns {Promise<Array<{ id: number, name: string }>>}
  */
-function fetchCourses(baseUrl, token) {
-  return fetchAllPages(baseUrl, '/api/v1/courses?enrollment_state=active&per_page=100', token);
+function fetchCourses(baseUrl, auth) {
+  return fetchAllPages(baseUrl, '/api/v1/courses?enrollment_state=active&per_page=100', auth);
 }
 
 /**
  * Fetches all assignments for a single course.
  *
  * @param {string} baseUrl
- * @param {string} token
+ * @param {string|{ sessionCookie: string }} auth
  * @param {number} courseId
  * @returns {Promise<Array<object>>}
  */
-function fetchAssignmentsForCourse(baseUrl, token, courseId) {
-  return fetchAllPages(baseUrl, `/api/v1/courses/${courseId}/assignments?per_page=100`, token);
+function fetchAssignmentsForCourse(baseUrl, auth, courseId) {
+  return fetchAllPages(baseUrl, `/api/v1/courses/${courseId}/assignments?per_page=100`, auth);
 }
 
 /**
@@ -194,6 +256,7 @@ function assignmentToEvent(assignment, userId) {
 
 module.exports = {
   normalizeCanvasUrl,
+  assertPublicCanvasUrl,
   canvasGet,
   fetchCourses,
   fetchAssignmentsForCourse,
